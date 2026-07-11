@@ -1,0 +1,14 @@
+{
+  "name": "estatepay-firebase",
+  "version": "1.0.0",
+  "description": "EstatePay Firebase Backend project containing Firestore security rules and Node.js Cloud Functions.",
+  "scripts": {
+    "serve": "firebase emulators:start",
+    "shell": "firebase functions:shell",
+    "start": "npm run serve",
+    "deploy": "firebase deploy"
+  },
+  "devDependencies": {
+    "firebase-tools": "^13.0.0"
+  }
+}

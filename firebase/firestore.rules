@@ -1,0 +1,101 @@
+// firestore.rules
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function myPhone() {
+      return request.auth.token.phone_number;
+    }
+
+    function myRole() {
+      return request.auth.token.role; // custom claim: "resident" | "committee" | "admin"
+    }
+
+    function isAdminOrCommittee() {
+      return isSignedIn() && (myRole() == "committee" || myRole() == "admin");
+    }
+
+    function isVerifiedResident() {
+      return isSignedIn() &&
+             get(/databases/$(database)/documents/tenants/$(myPhone())).data.verified == true;
+    }
+
+    function sameEstate(estateId) {
+      return get(/databases/$(database)/documents/tenants/$(myPhone())).data.estateId == estateId;
+    }
+
+    // ---------------- ESTATES ----------------
+    match /estates/{estateId} {
+      allow read: if isSignedIn();
+      allow write: if isAdminOrCommittee(); // estate config, billing day, etc.
+
+      match /units/{unitId} {
+        // Zero-manual-data-entry menus need read access for everyone signed in
+        allow read: if isSignedIn();
+        allow write: if isAdminOrCommittee();
+      }
+    }
+
+    // ---------------- TENANTS ----------------
+    match /tenants/{phoneNumber} {
+      // A tenant can read their own profile; admins/committee can read anyone in their estate
+      allow read: if isSignedIn() &&
+                     (myPhone() == phoneNumber || isAdminOrCommittee());
+      // Profile writes go through Cloud Functions only (role changes, verification)
+      allow write: if false;
+    }
+
+    // ---------------- BILLS ----------------
+    match /bills/{billId} {
+      allow read: if isSignedIn() &&
+                     (resource.data.tenantPhone == myPhone() || isAdminOrCommittee());
+      // Bills are only ever created/updated by Cloud Functions (billing engine, M-Pesa callback)
+      allow write: if false;
+    }
+
+    // ---------------- TRANSACTIONS ----------------
+    match /transactions/{transactionId} {
+      allow read: if isSignedIn() &&
+                     (resource.data.tenantPhone == myPhone() || isAdminOrCommittee());
+      allow write: if false; // STK push init + callback are server-side only
+    }
+
+    // ---------------- FORUM: ANNOUNCEMENTS ----------------
+    match /forum_announcements/{announcementId} {
+      // All verified residents in the estate can read
+      allow read: if isSignedIn() && isVerifiedResident() &&
+                     sameEstate(resource.data.estateId);
+      // Only committee/admin can write, and only within their own estate
+      allow create: if isAdminOrCommittee() &&
+                       sameEstate(request.resource.data.estateId) &&
+                       request.resource.data.authorPhone == myPhone();
+      allow update, delete: if isAdminOrCommittee() &&
+                                sameEstate(resource.data.estateId);
+    }
+
+    // ---------------- FORUM: DISCUSSIONS ----------------
+    match /forum_discussions/{threadId} {
+      allow read: if isSignedIn() && isVerifiedResident() &&
+                     sameEstate(resource.data.estateId);
+      allow create: if isSignedIn() && isVerifiedResident() &&
+                       sameEstate(request.resource.data.estateId) &&
+                       request.resource.data.authorPhone == myPhone();
+      // Authors can edit/delete their own thread; committee/admin can moderate any
+      allow update, delete: if isSignedIn() &&
+                                (resource.data.authorPhone == myPhone() || isAdminOrCommittee());
+
+      match /replies/{replyId} {
+        allow read: if isSignedIn() && isVerifiedResident();
+        allow create: if isSignedIn() && isVerifiedResident() &&
+                         request.resource.data.authorPhone == myPhone();
+        allow update, delete: if isSignedIn() &&
+                                  (resource.data.authorPhone == myPhone() || isAdminOrCommittee());
+      }
+    }
+  }
+}
