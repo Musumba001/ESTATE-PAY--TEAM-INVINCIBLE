@@ -259,61 +259,15 @@ h1, h2, h3, h4, h5, h6 {
   overflow: hidden;
 }
 
-/* Phone Mockup Styling */
-.phone-mockup {
-  width: 320px;
-  height: 560px;
-  background: #000;
-  border-radius: var(--radius-xl);
-  padding: 9px;
-  box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.7), 0 0 20px rgba(99, 102, 241, 0.1);
-  border: 3px solid #27303f;
-  position: relative;
-  transition: opacity 0.3s ease, transform 0.3s ease;
-}
-
-.phone-screen {
-  width: 100%;
-  height: 100%;
-  background: var(--bg-device);
-  border-radius: 30px;
-  overflow: hidden;
-  display: flex;
-  flex-direction: column;
-  position: relative;
-}
-
-/* Phone Status Bar */
-.screen-header {
-  height: 36px;
-  padding: 0 20px;
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  font-size: 11px;
-  font-weight: 600;
-  color: rgba(255, 255, 255, 0.7);
-  z-index: 10;
-}
-
-.screen-status-icons {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-}
-
-.icon-xs {
-  width: 12px;
-  height: 12px;
-}
-
-/* FlutterFlow App Layout */
+/* Mobile App Content Container */
 .mobile-app-content {
   flex: 1;
   display: flex;
   flex-direction: column;
-  overflow-y: auto;
-  padding: 10px 16px 20px;
+  overflow: hidden;
+  padding: 0;
+  min-height: 0;
+  width: 100%;
 }
 
 /* Mobile Navbar */
@@ -1365,7 +1319,8 @@ select.form-control {
   display: flex;
   flex-direction: column;
   overflow: hidden;
-  height: 100%;
+  flex: 1;
+  min-height: 0;
   width: 100%;
 }
 
@@ -1373,11 +1328,16 @@ select.form-control {
   display: flex;
   flex-direction: column;
   width: 100%;
-  height: 100%;
+  flex: 1;
+  min-height: 0;
   background: #080C14;
   color: #fff;
   font-family: 'Plus Jakarta Sans', sans-serif;
-  overflow-y: auto;
+  /* Must be hidden (not auto/scroll) so flex children like ep-dashboard
+     can stretch to fill the full height. Each child manages its own
+     scroll: ep-dashboard-content scrolls the main content, and
+     ep-container scrolls auth/house-entry screens. */
+  overflow: hidden;
   position: relative;
   box-sizing: border-box;
 }
@@ -1389,52 +1349,53 @@ select.form-control {
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  height: 100%;
-  padding: 24px;
+  flex: 1;
+  min-height: 0;
+  padding: clamp(20px, 5dvh, 40px) clamp(20px, 5vw, 32px);
 }
 .ep-logo-wrapper {
-  width: 80px;
-  height: 80px;
-  border-radius: 16px;
+  width: clamp(64px, 18vw, 88px);
+  height: clamp(64px, 18vw, 88px);
+  border-radius: clamp(14px, 3vw, 20px);
   display: flex;
   align-items: center;
   justify-content: center;
   background: linear-gradient(135deg, #1565C0 0%, #1976D2 100%);
   box-shadow: 0 0 40px rgba(25, 118, 210, 0.5);
-  margin-bottom: 24px;
+  margin-bottom: clamp(16px, 3dvh, 28px);
 }
 .ep-logo-wrapper-sm {
-  width: 56px;
-  height: 56px;
-  border-radius: 12px;
+  width: clamp(44px, 12vw, 60px);
+  height: clamp(44px, 12vw, 60px);
+  border-radius: clamp(10px, 2.5vw, 14px);
   display: flex;
   align-items: center;
   justify-content: center;
   background: linear-gradient(135deg, #1565C0 0%, #1976D2 100%);
-  margin-bottom: 12px;
+  margin-bottom: clamp(8px, 2dvh, 14px);
 }
 .ep-splash-title {
   color: #fff;
-  font-size: 24px;
+  font-size: clamp(20px, 5vw, 26px);
   font-weight: 800;
   letter-spacing: 0.3em;
   text-align: center;
-  margin-bottom: 8px;
+  margin-bottom: clamp(6px, 1.5dvh, 10px);
   font-family: 'Outfit', sans-serif;
 }
 .ep-splash-subtitle {
   color: #9CA3AF;
-  font-size: 12px;
+  font-size: clamp(11px, 2.8vw, 14px);
   text-align: center;
-  margin-bottom: 64px;
+  margin-bottom: clamp(40px, 10dvh, 72px);
 }
 .ep-btn-primary {
   background: linear-gradient(90deg, #1565C0 0%, #1976D2 100%);
   color: #fff;
   font-weight: 600;
-  font-size: 14px;
-  padding: 14px;
-  border-radius: 12px;
+  font-size: clamp(13px, 3.2vw, 16px);
+  padding: clamp(12px, 3dvh, 16px);
+  border-radius: clamp(10px, 2.5vw, 14px);
   border: none;
   cursor: pointer;
   width: 100%;
@@ -1445,18 +1406,19 @@ select.form-control {
   align-items: center;
   justify-content: center;
   gap: 8px;
+  -webkit-tap-highlight-color: transparent;
 }
-.ep-btn-primary:hover {
-  opacity: 0.9;
-  transform: translateY(-1px);
+.ep-btn-primary:active {
+  opacity: 0.85;
+  transform: scale(0.98);
 }
 .ep-btn-outline {
   background: transparent;
   color: #60A5FA;
   font-weight: 600;
-  font-size: 13px;
-  padding: 12px;
-  border-radius: 12px;
+  font-size: clamp(12px, 3vw, 15px);
+  padding: clamp(10px, 2.5dvh, 14px);
+  border-radius: clamp(10px, 2.5vw, 14px);
   border: 1px solid #1976D2;
   cursor: pointer;
   width: 100%;
@@ -1471,8 +1433,10 @@ select.form-control {
 .ep-container {
   display: flex;
   flex-direction: column;
-  height: 100%;
-  padding: 24px 20px;
+  flex: 1;
+  min-height: 0;
+  padding: clamp(16px, 4dvh, 28px) clamp(16px, 4vw, 24px);
+  overflow-y: auto;
 }
 .ep-back-btn {
   background: transparent;
@@ -1491,20 +1455,21 @@ select.form-control {
 .ep-input-group {
   display: flex;
   flex-direction: column;
-  gap: 12px;
+  gap: clamp(10px, 2dvh, 14px);
   width: 100%;
 }
 .ep-input {
   background: #1A1A2A;
   border: 1px solid #2A2A3A;
-  border-radius: 10px;
+  border-radius: clamp(8px, 2vw, 12px);
   color: #E5E7EB;
-  padding: 12px 14px;
-  font-size: 13px;
+  padding: clamp(10px, 2.5dvh, 14px) clamp(12px, 3vw, 16px);
+  font-size: clamp(13px, 3.2vw, 15px);
   outline: none;
   width: 100%;
   font-family: 'Plus Jakarta Sans', sans-serif;
   box-sizing: border-box;
+  -webkit-appearance: none;
 }
 .ep-input:focus {
   border-color: #1976D2;
@@ -1588,46 +1553,49 @@ select.form-control {
 .ep-dashboard {
   display: flex;
   flex-direction: column;
-  height: 100%;
+  flex: 1;
+  min-height: 0;
   background: #080C14;
 }
 .ep-dashboard-header {
-  padding: 16px 20px 12px;
+  padding: clamp(10px, 2.5dvh, 16px) clamp(14px, 4vw, 22px) clamp(8px, 2dvh, 12px);
   display: flex;
   justify-content: space-between;
   align-items: center;
   border-bottom: 1px solid #1E1E30;
+  flex-shrink: 0;
 }
 .ep-header-profile {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: clamp(8px, 2vw, 12px);
 }
 .ep-header-avatar {
-  width: 36px;
-  height: 36px;
-  border-radius: 10px;
+  width: clamp(32px, 8vw, 40px);
+  height: clamp(32px, 8vw, 40px);
+  border-radius: clamp(8px, 2vw, 12px);
   background: linear-gradient(135deg, #1565C0, #1976D2);
   display: flex;
   align-items: center;
   justify-content: center;
   color: #fff;
+  flex-shrink: 0;
 }
 .ep-header-info p {
   margin: 0;
 }
 .ep-header-info .ep-welcome {
   color: #9CA3AF;
-  font-size: 10px;
+  font-size: clamp(9px, 2.2vw, 11px);
 }
 .ep-header-info .ep-user-title {
   color: #fff;
   font-weight: 700;
-  font-size: 13px;
+  font-size: clamp(12px, 3vw, 14px);
 }
 .ep-header-btn {
-  width: 34px;
-  height: 34px;
+  width: clamp(30px, 7.5vw, 38px);
+  height: clamp(30px, 7.5vw, 38px);
   border-radius: 50%;
   background: #1A1A2A;
   border: none;
@@ -1637,6 +1605,7 @@ select.form-control {
   justify-content: center;
   cursor: pointer;
   position: relative;
+  -webkit-tap-highlight-color: transparent;
 }
 .ep-header-btn.danger {
   background: rgba(239, 68, 68, 0.15);
@@ -1655,32 +1624,36 @@ select.form-control {
 /* Scrollable dashboard content */
 .ep-dashboard-content {
   flex: 1;
+  min-height: 0;
   overflow-y: auto;
-  padding: 16px 20px 80px; /* bottom padding to clear the nav bar */
+  -webkit-overflow-scrolling: touch;
+  /* bottom padding clears the fixed nav bar + safe area */
+  padding: clamp(12px, 3dvh, 20px) clamp(14px, 4vw, 22px)
+           calc(clamp(52px, 8dvh, 64px) + env(safe-area-inset-bottom, 0px));
   display: flex;
   flex-direction: column;
-  gap: 16px;
+  gap: clamp(12px, 2.5dvh, 18px);
 }
 
 /* Balance Card */
 .ep-balance-card {
   background: linear-gradient(135deg, #0D2051 0%, #1565C0 100%);
   box-shadow: 0 8px 32px rgba(21, 101, 192, 0.3);
-  border-radius: 16px;
-  padding: 16px;
+  border-radius: clamp(12px, 3.5vw, 18px);
+  padding: clamp(14px, 3.5dvh, 20px) clamp(14px, 3.5vw, 20px);
   display: flex;
   flex-direction: column;
   flex-shrink: 0;
 }
 .ep-balance-label {
   color: #90CAF9;
-  font-size: 11px;
+  font-size: clamp(10px, 2.5vw, 12px);
 }
 .ep-balance-val {
   color: #fff;
-  font-size: 28px;
+  font-size: clamp(22px, 6vw, 32px);
   font-weight: 800;
-  margin: 6px 0 12px;
+  margin: clamp(4px, 1dvh, 8px) 0 clamp(8px, 2dvh, 14px);
   font-family: 'Outfit', sans-serif;
 }
 .ep-balance-footer {
@@ -1692,9 +1665,9 @@ select.form-control {
   display: inline-flex;
   align-items: center;
   gap: 4px;
-  padding: 4px 10px;
+  padding: clamp(3px, 0.8dvh, 5px) clamp(8px, 2vw, 12px);
   border-radius: 20px;
-  font-size: 10px;
+  font-size: clamp(9px, 2.2vw, 11px);
   font-weight: 600;
 }
 
@@ -1870,13 +1843,18 @@ select.form-control {
   bottom: 0;
   left: 0;
   right: 0;
-  height: 56px;
-  background: #0D0D1A;
+  height: clamp(52px, 8dvh, 64px);
+  /* also account for the notch/home indicator on modern phones */
+  padding-bottom: env(safe-area-inset-bottom, 0px);
+  background: rgba(13, 13, 26, 0.97);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
   border-top: 1px solid #1E1E30;
   display: grid;
   grid-template-columns: repeat(5, minmax(0, 1fr));
   align-items: center;
   z-index: 40;
+  flex-shrink: 0;
 }
 .ep-bottom-nav-btn {
   background: transparent;
@@ -1887,17 +1865,18 @@ select.form-control {
   justify-content: center;
   color: #4B5563;
   cursor: pointer;
-  padding: 6px 2px 4px;
+  padding: clamp(4px, 1dvh, 8px) 2px clamp(2px, 0.5dvh, 4px);
   min-width: 0;
-  transition: all 0.2s ease;
+  transition: color 0.2s ease;
+  -webkit-tap-highlight-color: transparent;
+  gap: 2px;
 }
 .ep-bottom-nav-btn.active {
   color: #1976D2;
 }
 .ep-bottom-nav-btn span {
-  font-size: 8.5px;
+  font-size: clamp(8px, 2vw, 10px);
   font-weight: 600;
-  margin-top: 2px;
   text-align: center;
   line-height: 1.1;
 }
@@ -2091,3 +2070,103 @@ select.form-control {
   font-family: 'Plus Jakarta Sans', sans-serif;
   box-sizing: border-box;
 }
+
+/* Spinner & Keyframes for Loading State */
+@keyframes ep-spin {
+  to { transform: rotate(360deg); }
+}
+
+.ep-spinner {
+  border: 2px solid rgba(255, 255, 255, 0.1);
+  border-top-color: #60A5FA;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  animation: ep-spin 0.8s linear infinite;
+}
+
+/* ==========================================================================
+   Auth Screen — Login / Sign Up Tabs & Input Wrappers
+   ========================================================================== */
+
+/* Tab switcher pill container */
+.ep-auth-tabs {
+  display: flex;
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 12px;
+  padding: 4px;
+  gap: 4px;
+}
+
+/* Individual tab button */
+.ep-tab-btn {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 10px 12px;
+  border-radius: 9px;
+  border: none;
+  background: transparent;
+  color: #6B7280;
+  font-family: 'Plus Jakarta Sans', sans-serif;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 0.2s ease, color 0.2s ease, box-shadow 0.2s ease;
+}
+
+.ep-tab-btn.active {
+  background: linear-gradient(135deg, hsl(245, 90%, 65%), hsl(245, 90%, 58%));
+  color: #fff;
+  box-shadow: 0 2px 12px rgba(99, 102, 241, 0.35);
+}
+
+.ep-tab-btn:not(.active):hover {
+  background: rgba(255, 255, 255, 0.07);
+  color: #D1D5DB;
+}
+
+/* Input with leading icon */
+.ep-input-wrapper {
+  position: relative;
+  display: flex;
+  align-items: center;
+  width: 100%;
+}
+
+.ep-input-icon {
+  position: absolute;
+  left: 12px;
+  width: 15px;
+  height: 15px;
+  color: #6B7280;
+  pointer-events: none;
+  flex-shrink: 0;
+}
+
+/* Pad left to make room for the icon */
+.ep-input-icon-pad {
+  padding-left: 36px !important;
+}
+
+/* Show/hide password eye button */
+.ep-input-eye {
+  position: absolute;
+  right: 10px;
+  background: none;
+  border: none;
+  color: #6B7280;
+  cursor: pointer;
+  padding: 4px;
+  display: flex;
+  align-items: center;
+  transition: color 0.15s;
+}
+
+.ep-input-eye:hover {
+  color: #9CA3AF;
+}
+

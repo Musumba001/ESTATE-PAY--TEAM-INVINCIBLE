@@ -15,6 +15,7 @@
 import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js";
 import {
   getAuth, connectAuthEmulator, RecaptchaVerifier, signInWithPhoneNumber, onAuthStateChanged, signOut,
+  signInWithEmailAndPassword, EmailAuthProvider, linkWithCredential,
 } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js";
 import {
   getFirestore, connectFirestoreEmulator, doc, onSnapshot, collection, query, where, orderBy, limit, getDocs,
@@ -35,7 +36,7 @@ import {
 // Once you have a real approved WhatsApp sender, replace this with that
 // number (E.164, digits only, no "+").
 // ==========================================================================
-const WHATSAPP_BOT_NUMBER = "14155238886"; // Twilio Sandbox default
+const WHATSAPP_BOT_NUMBER = "14155238886"; // Update after Meta setup
 
 const FIREBASE_CONFIG = {
   apiKey: "AIzaSyCmmhTApZ66vDtO5TSZyCCJK7Vi2XIVOwQ",
@@ -87,10 +88,18 @@ const callRunBillingNow = httpsCallable(functions, "runBillingNow");
 // ==========================================================================
 // 2. App State
 // ==========================================================================
-let currentScreen = "splash";       // splash | auth | otp | house-entry | tenant-dashboard | manager-dashboard
+// Synchronously read cached session on boot to avoid flash of splash screen
+const cachedRole = localStorage.getItem("estatepay_cached_role");
+let currentScreen = cachedRole === "manager" ? "manager-dashboard" : (cachedRole === "tenant" ? "tenant-dashboard" : "splash");
+let authChecking = !cachedRole; // false on startup if cached role exists, otherwise true to check auth status
+
 let authRole = "tenant";            // tenant | manager
 let authPhone = "";
 let authFullName = "";
+let authMode = "login";             // login | signup — which tab is active on the auth screen
+let authPassword = "";
+let authConfirmPassword = "";
+let loginLoading = false;           // true while signInWithEmailAndPassword is in flight
 let otpCode = "";
 let confirmationResult = null;      // Firebase phone auth confirmation handle
 let recaptchaVerifier = null;
@@ -125,8 +134,15 @@ let toastMessage = null;
 let unsubscribers = [];             // active onSnapshot() unsubscribe functions, cleared on screen change
 
 // ==========================================================================
-// 3. Auth flow (real Firebase Phone Authentication)
+// 3. Auth flow
 // ==========================================================================
+
+/** Converts a phone number to a pseudo-email for Firebase email/password auth. */
+function pseudoEmail(phone) {
+  // Strip leading + and whitespace, e.g. "+254712345678" -> "254712345678@estatepay.app"
+  return phone.replace(/^\+/, "").replace(/\s/g, "") + "@estatepay.app";
+}
+
 function ensureRecaptcha() {
   if (recaptchaVerifier) return recaptchaVerifier;
   recaptchaVerifier = new RecaptchaVerifier(auth, "recaptcha-container", { size: "invisible" });
@@ -143,51 +159,179 @@ async function confirmOtp(code) {
   return result.user;
 }
 
+/**
+ * Login with phone number + password (returning users).
+ * Uses the pseudo-email trick: +254712345678 -> 254712345678@estatepay.app
+ */
+async function handleLogin() {
+  if (!authPhone) { showToast("Please enter your phone number."); return; }
+  if (!authPassword) { showToast("Please enter your password."); return; }
+  loginLoading = true;
+  renderApp();
+  try {
+    await signInWithEmailAndPassword(auth, pseudoEmail(authPhone), authPassword);
+    // onAuthStateChanged fires and routes to the correct dashboard.
+  } catch (err) {
+    loginLoading = false;
+    if (err.code === "auth/user-not-found" || err.code === "auth/wrong-password" || err.code === "auth/invalid-credential") {
+      showToast("Incorrect phone number or password.");
+    } else {
+      showToast(err.message || "Login failed. Please try again.");
+    }
+    renderApp();
+  }
+}
+
+/**
+ * After OTP is confirmed for a new user, set a password by linking
+ * an email/password credential to the phone-auth account.
+ */
+async function handleSetPassword() {
+  if (authPassword.length < 6) { showToast("Password must be at least 6 characters."); return; }
+  if (authPassword !== authConfirmPassword) { showToast("Passwords don't match."); return; }
+  try {
+    const credential = EmailAuthProvider.credential(pseudoEmail(authPhone), authPassword);
+    await linkWithCredential(currentUser, credential);
+    // Password linked — now send the user to house entry to finish setup.
+    currentScreen = "house-entry";
+    householdEntryStep = "search";
+    await loadEstatesOnce();
+    authPassword = "";
+    authConfirmPassword = "";
+    renderApp();
+  } catch (err) {
+    if (err.code === "auth/provider-already-linked" || err.code === "auth/email-already-in-use") {
+      // Password already set (e.g. re-registered) — just proceed to house entry.
+      currentScreen = "house-entry";
+      householdEntryStep = "search";
+      await loadEstatesOnce();
+      renderApp();
+    } else {
+      showToast(err.message || "Could not set password. Please try again.");
+    }
+  }
+}
+
 onAuthStateChanged(auth, async (user) => {
   currentUser = user;
+  loginLoading = false;
+
   if (!user) {
-    if (currentScreen !== "auth" && currentScreen !== "otp") {
+    authChecking = false;
+    localStorage.removeItem("estatepay_cached_role");
+    if (currentScreen !== "auth" && currentScreen !== "otp" && currentScreen !== "set-password") {
       currentScreen = "splash";
       renderApp();
     }
     return;
   }
 
-  // Force-refresh the ID token so custom claims (role/estateId/unitId) set
-  // by the onTenantWrite trigger are current, not stale from before signup.
-  await user.getIdToken(true);
+  // If the user just confirmed an OTP (new signup path) and we're waiting
+  // for them to set a password, don't do resolveIdentity yet — stay on set-password.
+  if (currentScreen === "otp") {
+    authChecking = false;
+    currentScreen = "set-password";
+    authPassword = "";
+    authConfirmPassword = "";
+    renderApp();
+    return;
+  }
+
+  // Already past set-password — don't re-trigger routing.
+  if (currentScreen === "set-password") {
+    authChecking = false;
+    return;
+  }
 
   try {
+    // ── Claim-based Fast Routing ────────────────────────────────────────────
+    // Retrieve custom claims from the ID token. If the user already has claims
+    // set, route them immediately to bypass the resolveIdentity Cloud Function.
+    const tokenResult = await user.getIdTokenResult();
+    const claims = tokenResult.claims;
+    if (claims && claims.role && claims.estateId) {
+      authChecking = false;
+      const isManager = claims.role === "admin" || claims.role === "committee";
+      localStorage.setItem("estatepay_cached_role", isManager ? "manager" : "tenant");
+      
+      if (isManager) {
+        currentScreen = "manager-dashboard";
+        managerActiveTab = "overview";
+        subscribeManagerDashboard(claims.estateId);
+      } else {
+        currentScreen = "tenant-dashboard";
+        tenantActiveTab = "home";
+        const tenantPhone = user.phoneNumber || authPhone;
+        authPhone = tenantPhone || authPhone;
+        subscribeTenantDashboard(tenantPhone);
+      }
+      renderApp();
+      return;
+    }
+
+    // ── Fallback: resolveIdentity Cloud Function ──────────────────────────
+    // Fall back to the Cloud Function only if claims are not set or incomplete
+    // (e.g. immediate first-time onboarding).
     const { data } = await callResolveIdentity({});
+    authChecking = false;
     if (data.exists) {
       const role = data.tenant.role;
-      if (role === "admin" || role === "committee") {
+      const isManager = role === "admin" || role === "committee";
+      localStorage.setItem("estatepay_cached_role", isManager ? "manager" : "tenant");
+
+      if (isManager) {
         currentScreen = "manager-dashboard";
         managerActiveTab = "overview";
         subscribeManagerDashboard(data.tenant.estateId);
       } else {
         currentScreen = "tenant-dashboard";
         tenantActiveTab = "home";
-        subscribeTenantDashboard(user.phoneNumber);
+        const tenantPhone = data.tenant.phone || user.phoneNumber;
+        authPhone = tenantPhone || authPhone;
+        subscribeTenantDashboard(tenantPhone);
       }
     } else {
+      localStorage.removeItem("estatepay_cached_role");
       currentScreen = "house-entry";
       householdEntryStep = "search";
       await loadEstatesOnce();
     }
     renderApp();
   } catch (err) {
+    authChecking = false;
+    localStorage.removeItem("estatepay_cached_role");
     console.error("resolveIdentity failed:", err);
     showToast("Something went wrong loading your account. Please try again.");
+    currentScreen = "splash";
+    renderApp();
   }
 });
 
 // ==========================================================================
 // 4. Firestore live subscriptions
 // ==========================================================================
+let activeSubscribedEstateId = null;
+let activeSubscribedUnitId = null;
+let unitSubUnsubs = [];
+let annSubUnsubs = [];
+
+function clearUnitSubscriptions() {
+  unitSubUnsubs.forEach((unsub) => unsub());
+  unitSubUnsubs = [];
+  activeSubscribedUnitId = null;
+}
+
+function clearAnnouncementsSubscriptions() {
+  annSubUnsubs.forEach((unsub) => unsub());
+  annSubUnsubs = [];
+  activeSubscribedEstateId = null;
+}
+
 function clearSubscriptions() {
   unsubscribers.forEach((unsub) => unsub());
   unsubscribers = [];
+  clearUnitSubscriptions();
+  clearAnnouncementsSubscriptions();
 }
 
 async function loadEstatesOnce() {
@@ -201,8 +345,12 @@ function subscribeTenantDashboard(phone) {
   const tenantUnsub = onSnapshot(doc(dbFs, "tenants", phone), async (snap) => {
     tenantDoc = snap.exists() ? { id: snap.id, ...snap.data() } : null;
     if (tenantDoc?.estateId && tenantDoc?.unitId) {
-      subscribeUnit(tenantDoc.estateId, tenantDoc.unitId);
-      subscribeAnnouncements(tenantDoc.estateId);
+      if (tenantDoc.estateId !== activeSubscribedEstateId) {
+        subscribeAnnouncements(tenantDoc.estateId);
+      }
+      if (tenantDoc.unitId !== activeSubscribedUnitId) {
+        subscribeUnit(tenantDoc.estateId, tenantDoc.unitId);
+      }
     }
     renderApp();
   });
@@ -234,11 +382,14 @@ function subscribeTenantDashboard(phone) {
 }
 
 function subscribeUnit(estateId, unitId) {
+  clearUnitSubscriptions();
+  activeSubscribedUnitId = unitId;
+
   const unitUnsub = onSnapshot(doc(dbFs, "estates", estateId, "units", unitId), (snap) => {
     unitDoc = snap.exists() ? { id: snap.id, ...snap.data() } : null;
     renderApp();
   });
-  unsubscribers.push(unitUnsub);
+  unitSubUnsubs.push(unitUnsub);
 
   const membersQuery = query(
     collection(dbFs, "tenants"),
@@ -249,10 +400,13 @@ function subscribeUnit(estateId, unitId) {
     householdMembers = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
     if (currentScreen === "tenant-dashboard") renderApp();
   });
-  unsubscribers.push(membersUnsub);
+  unitSubUnsubs.push(membersUnsub);
 }
 
 function subscribeAnnouncements(estateId) {
+  clearAnnouncementsSubscriptions();
+  activeSubscribedEstateId = estateId;
+
   const annQuery = query(
     collection(dbFs, "forum_announcements"),
     where("estateId", "==", estateId),
@@ -261,9 +415,9 @@ function subscribeAnnouncements(estateId) {
   );
   const annUnsub = onSnapshot(annQuery, (snap) => {
     announcements = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
-    if (currentScreen === "tenant-dashboard") renderApp();
+    if (currentScreen === "tenant-dashboard" || currentScreen === "manager-dashboard") renderApp();
   });
-  unsubscribers.push(annUnsub);
+  annSubUnsubs.push(annUnsub);
 }
 
 function subscribeManagerDashboard(estateId) {
@@ -308,16 +462,21 @@ function extractInviteToken(value) {
 }
 
 async function handleRegisterHousehold() {
+  if (!registerEstateId) { showToast("Please select your estate first."); return; }
+  if (!houseNumberInput.trim()) { showToast("Please enter your house number."); return; }
   try {
     await callRegisterHousehold({
       estateId: registerEstateId,
-      houseNumber: houseNumberInput,
+      houseNumber: houseNumberInput.trim(),
       fullName: authFullName,
     });
     await currentUser.getIdToken(true); // pick up the freshly-set custom claims
     showToast("House registered! Welcome to EstatePay.");
     currentScreen = "tenant-dashboard";
-    subscribeTenantDashboard(currentUser.phoneNumber);
+    // authPhone is set during OTP signup or login. currentUser.phoneNumber is
+    // null when signed in via email/password (the pseudo-email trick).
+    const phone = authPhone || currentUser.phoneNumber;
+    subscribeTenantDashboard(phone);
     renderApp();
   } catch (err) {
     if (err.code === "functions/already-exists") {
@@ -336,7 +495,8 @@ async function handleJoinWithInvite() {
     await currentUser.getIdToken(true); // pick up the freshly-set custom claims
     showToast("You've joined your household!");
     currentScreen = "tenant-dashboard";
-    subscribeTenantDashboard(currentUser.phoneNumber);
+    const phone = authPhone || currentUser.phoneNumber;
+    subscribeTenantDashboard(phone);
     renderApp();
   } catch (err) {
     showToast(err.message || "That invite link didn't work.");
@@ -414,6 +574,21 @@ function showToast(message) {
 //    existing style.css classes apply unchanged)
 // ==========================================================================
 function renderSplash() {
+  let actionsHtml = `
+    <div style="display: flex; flex-direction: column; gap: 12px; width: 100%; max-width: 240px;">
+      <button id="btn-splash-get-started" class="ep-btn-primary">Get Started</button>
+    </div>
+  `;
+
+  if (authChecking) {
+    actionsHtml = `
+      <div style="display: flex; flex-direction: column; align-items: center; gap: 10px; width: 100%; max-width: 240px; color: #9CA3AF; font-size: 13px; margin-top: 10px;">
+        <div class="ep-spinner"></div>
+        <span>Authenticating...</span>
+      </div>
+    `;
+  }
+
   return `
     <div class="ep-splash-bg">
       <div class="ep-logo-wrapper">
@@ -421,36 +596,122 @@ function renderSplash() {
       </div>
       <div class="ep-splash-title">ESTATEPAY</div>
       <div class="ep-splash-subtitle">Smart household payments simplified</div>
-      <div style="display: flex; flex-direction: column; gap: 12px; width: 100%; max-width: 240px;">
-        <button id="btn-splash-get-started" class="ep-btn-primary">Get Started</button>
-        <button id="btn-splash-manager-login" class="ep-btn-outline">Estate Manager Login</button>
-      </div>
+      ${actionsHtml}
     </div>
     <div id="recaptcha-container"></div>
   `;
 }
 
 function renderAuth() {
+  const isLogin = authMode === "login";
+
+  const loginForm = `
+    <div style="display: flex; flex-direction: column; gap: 14px;">
+      <div class="ep-input-wrapper">
+        <i data-lucide="phone" class="ep-input-icon"></i>
+        <input type="tel" id="input-auth-phone" class="ep-input ep-input-icon-pad"
+          placeholder="Phone e.g. +2547XXXXXXXX" value="${authPhone}" autocomplete="tel">
+      </div>
+      <div class="ep-input-wrapper">
+        <i data-lucide="lock" class="ep-input-icon"></i>
+        <input type="password" id="input-auth-password" class="ep-input ep-input-icon-pad"
+          placeholder="Password" value="${authPassword}" autocomplete="current-password">
+        <button id="btn-toggle-pw" class="ep-input-eye" type="button" tabindex="-1">
+          <i data-lucide="eye" style="width:16px;height:16px;"></i>
+        </button>
+      </div>
+      ${loginLoading
+        ? `<div style="display:flex;justify-content:center;margin-top:8px;"><div class="ep-spinner"></div></div>`
+        : `<button id="btn-auth-login" class="ep-btn-primary" style="margin-top: 8px;">Login</button>`
+      }
+    </div>
+  `;
+
+  const signupForm = `
+    <div style="display: flex; flex-direction: column; gap: 14px;">
+      <div class="ep-input-wrapper">
+        <i data-lucide="user" class="ep-input-icon"></i>
+        <input type="text" id="input-auth-name" class="ep-input ep-input-icon-pad"
+          placeholder="Full Name" value="${authFullName}" autocomplete="name">
+      </div>
+      <div class="ep-input-wrapper">
+        <i data-lucide="phone" class="ep-input-icon"></i>
+        <input type="tel" id="input-auth-phone" class="ep-input ep-input-icon-pad"
+          placeholder="Phone e.g. +2547XXXXXXXX" value="${authPhone}" autocomplete="tel">
+      </div>
+      <button id="btn-auth-send-otp" class="ep-btn-primary" style="margin-top: 8px;">Send Verification Code</button>
+    </div>
+  `;
+
   return `
     <div class="ep-screen">
       <div class="ep-container">
         <button id="btn-auth-back" class="ep-back-btn">
           <i data-lucide="arrow-left" style="width: 20px; height: 20px;"></i>
         </button>
-        <div style="display: flex; flex-direction: column; align-items: center; gap: 12px; margin-bottom: 24px;">
+
+        <div style="display: flex; flex-direction: column; align-items: center; gap: 10px; margin-bottom: 28px;">
           <div class="ep-logo-wrapper-sm">
             <i data-lucide="wallet" style="width: 28px; height: 28px; color: white;"></i>
           </div>
-          <h1 style="color: white; font-size: 18px; font-weight: 800; letter-spacing: 0.25em;">
-            ${authRole === "manager" ? "MANAGER LOGIN" : "ESTATEPAY"}
-          </h1>
+          <h1 style="color: white; font-size: 18px; font-weight: 800; letter-spacing: 0.25em;">ESTATEPAY</h1>
+          <p style="color: #9CA3AF; font-size: 12px; text-align: center; margin: 0;">
+            ${isLogin ? "Welcome back" : "Create your account"}
+          </p>
         </div>
-        <div class="ep-input-group" style="flex: 1;">
-          <input type="text" id="input-auth-name" class="ep-input" placeholder="Enter Full Name" value="${authFullName}">
-          <input type="tel" id="input-auth-phone" class="ep-input" placeholder="Phone e.g. +2547XXXXXXXX" value="${authPhone}">
+
+        <!-- Tab switcher -->
+        <div class="ep-auth-tabs">
+          <button id="btn-tab-login" class="ep-tab-btn ${isLogin ? 'active' : ''}">
+            <i data-lucide="log-in" style="width:14px;height:14px;"></i> Login
+          </button>
+          <button id="btn-tab-signup" class="ep-tab-btn ${!isLogin ? 'active' : ''}">
+            <i data-lucide="user-plus" style="width:14px;height:14px;"></i> Sign Up
+          </button>
         </div>
-        <button id="btn-auth-send-otp" class="ep-btn-primary" style="margin-top: 24px;">Send Verification Code</button>
+
+        <div style="margin-top: 24px;">
+          ${isLogin ? loginForm : signupForm}
+        </div>
+
         <div id="recaptcha-container" style="margin-top: 12px;"></div>
+      </div>
+    </div>
+  `;
+}
+
+function renderSetPassword() {
+  return `
+    <div class="ep-screen">
+      <div class="ep-container">
+        <div style="display: flex; flex-direction: column; align-items: center; gap: 10px; margin-bottom: 28px;">
+          <div class="ep-logo-wrapper-sm" style="background: linear-gradient(135deg, #10B981, #059669);">
+            <i data-lucide="shield-check" style="width: 28px; height: 28px; color: white;"></i>
+          </div>
+          <h1 style="color: white; font-size: 16px; font-weight: 800;">Create a Password</h1>
+          <p style="color: #9CA3AF; font-size: 12px; text-align: center; margin: 0; line-height: 1.5;">
+            Set a password so you can log in quickly next time — no OTP needed.
+          </p>
+        </div>
+
+        <div style="display: flex; flex-direction: column; gap: 14px;">
+          <div class="ep-input-wrapper">
+            <i data-lucide="lock" class="ep-input-icon"></i>
+            <input type="password" id="input-set-password" class="ep-input ep-input-icon-pad"
+              placeholder="New password (min 6 chars)" value="${authPassword}" autocomplete="new-password">
+          </div>
+          <div class="ep-input-wrapper">
+            <i data-lucide="lock" class="ep-input-icon"></i>
+            <input type="password" id="input-confirm-password" class="ep-input ep-input-icon-pad"
+              placeholder="Confirm password" value="${authConfirmPassword}" autocomplete="new-password">
+          </div>
+          <button id="btn-set-password" class="ep-btn-primary" style="margin-top: 8px;">
+            Set Up Account
+          </button>
+          <button id="btn-skip-password" style="background: transparent; border: none; color: #6B7280; font-size: 12px; cursor: pointer; padding: 4px;">
+            Skip for now
+          </button>
+        </div>
       </div>
     </div>
   `;
@@ -558,6 +819,16 @@ function renderTenantDashboard() {
           </span>
         </div>
         ${partialBar}
+      </div>
+
+      <div style="background: #111120; border: 1px solid #1E1E30; border-radius: 12px; padding: 12px 14px; display: flex; gap: 10px; align-items: flex-start;">
+        <div style="flex-shrink: 0; width: 32px; height: 32px; background: rgba(255,255,255,0.06); border-radius: 8px; display: flex; align-items: center; justify-content: center;">
+          <i data-lucide="shield-check" style="width: 16px; height: 16px; color: #9CA3AF;"></i>
+        </div>
+        <div style="flex: 1;">
+          <p style="color: white; font-size: 11px; font-weight: 700; margin: 0 0 3px; text-transform: uppercase; letter-spacing: 0.05em;">About Your Security Fee</p>
+          <p style="color: #9CA3AF; font-size: 11px; line-height: 1.55; margin: 0;">The monthly security fee covers 24/7 estate security personnel, gate access control and perimeter monitoring for all residents.</p>
+        </div>
       </div>
 
       <div>
@@ -1036,6 +1307,7 @@ function renderApp() {
     splash: renderSplash,
     auth: renderAuth,
     otp: renderOtp,
+    "set-password": renderSetPassword,
     "house-entry": renderHouseEntry,
     "tenant-dashboard": renderTenantDashboard,
     "manager-dashboard": renderManagerDashboard,
@@ -1058,10 +1330,34 @@ document.addEventListener("click", async (e) => {
   if (tab) { tenantActiveTab = tab; renderApp(); return; }
   if (mtab) { managerActiveTab = mtab; renderApp(); return; }
 
-  if (id === "btn-splash-get-started") { authRole = "tenant"; currentScreen = "auth"; renderApp(); return; }
-  if (id === "btn-splash-manager-login") { authRole = "manager"; currentScreen = "auth"; renderApp(); return; }
+  if (id === "btn-splash-get-started") {
+    authMode = "login";
+    authPassword = "";
+    authConfirmPassword = "";
+    currentScreen = "auth";
+    renderApp();
+    return;
+  }
+
+  // Tab switcher on the auth screen
+  if (id === "btn-tab-login") { authMode = "login"; renderApp(); return; }
+  if (id === "btn-tab-signup") { authMode = "signup"; renderApp(); return; }
+
   if (id === "btn-auth-back" || id === "btn-house-back") { currentScreen = "splash"; renderApp(); return; }
   if (id === "btn-otp-back") { currentScreen = "auth"; renderApp(); return; }
+
+  // Show/hide password toggle
+  if (id === "btn-toggle-pw") {
+    const pwInput = document.getElementById("input-auth-password");
+    if (pwInput) pwInput.type = pwInput.type === "password" ? "text" : "password";
+    return;
+  }
+
+  // Login with phone + password
+  if (id === "btn-auth-login") {
+    await handleLogin();
+    return;
+  }
 
   if (id === "btn-auth-send-otp") {
     if (!authPhone || !authFullName) { showToast("Please enter your name and phone number."); return; }
@@ -1078,10 +1374,25 @@ document.addEventListener("click", async (e) => {
   if (id === "btn-otp-confirm") {
     try {
       await confirmOtp(otpCode);
-      // onAuthStateChanged fires next and routes the user appropriately.
+      // onAuthStateChanged fires and moves to set-password for new users.
     } catch (err) {
       showToast("Incorrect code. Please try again.");
     }
+    return;
+  }
+
+  // Set password after OTP verification
+  if (id === "btn-set-password") {
+    await handleSetPassword();
+    return;
+  }
+
+  if (id === "btn-skip-password") {
+    // User skips setting a password — go straight to house entry.
+    currentScreen = "house-entry";
+    householdEntryStep = "search";
+    await loadEstatesOnce();
+    renderApp();
     return;
   }
 
@@ -1126,7 +1437,12 @@ document.addEventListener("click", async (e) => {
     return;
   }
   if (id === "btn-profile-invite") { await handleGenerateInvite(); return; }
-  if (id === "btn-signout" || id === "btn-manager-signout") { await signOut(auth); clearSubscriptions(); return; }
+  if (id === "btn-signout" || id === "btn-manager-signout") {
+    localStorage.removeItem("estatepay_cached_role");
+    await signOut(auth);
+    clearSubscriptions();
+    return;
+  }
 
   if (id === "btn-run-billing") { await handleRunBilling(); return; }
   if (id === "btn-post-announcement") {
@@ -1149,6 +1465,9 @@ document.addEventListener("input", (e) => {
   const id = e.target.id;
   if (id === "input-auth-name") authFullName = e.target.value;
   if (id === "input-auth-phone") authPhone = e.target.value;
+  if (id === "input-auth-password") authPassword = e.target.value;
+  if (id === "input-set-password") authPassword = e.target.value;
+  if (id === "input-confirm-password") authConfirmPassword = e.target.value;
   if (id === "input-otp-code") otpCode = e.target.value;
   if (id === "input-reg-estate") registerEstateId = e.target.value;
   if (id === "input-house-number") houseNumberInput = e.target.value;

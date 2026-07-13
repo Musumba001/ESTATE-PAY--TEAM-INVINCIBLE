@@ -1,26 +1,74 @@
 /**
- * receipts.js Receipts & Notification Delivery Utility
- * Formats receipts and sends SMS / WhatsApp alerts via Twilio Messaging API.
+ * receipts.js — Receipts & Notification Delivery Utility
+ *
+ * Formats payment receipts and sends WhatsApp alerts via the
+ * Meta WhatsApp Cloud API (replaces previous Twilio integration).
+ *
+ * Environment variables used at runtime:
+ *   META_WA_ACCESS_TOKEN    — set via Firebase Secret Manager
+ *   META_WA_PHONE_NUMBER_ID — set via Firebase Secret Manager
+ *
+ * Falls back to console logging in the local emulator when secrets
+ * are not configured.
  */
+
 const functions = require("firebase-functions");
 const admin = require("firebase-admin");
-const twilio = require("twilio");
+const axios = require("axios");
 
 const db = admin.firestore();
 
-// Twilio Client setup (using environment credentials)
-const accountSid = process.env.TWILIO_ACCOUNT_SID;
-const authToken = process.env.TWILIO_AUTH_TOKEN;
-const whatsappFrom = process.env.TWILIO_WHATSAPP_FROM || "whatsapp:+14155238886"; // Twilio Sandbox WhatsApp number
-let twilioClient = null;
+const GRAPH_API_VERSION = "v19.0";
 
-if (accountSid && authToken) {
-  twilioClient = twilio(accountSid, authToken);
+/**
+ * Sends a WhatsApp text message via the Meta Cloud API.
+ * Uses process.env because this file is outside the main secrets binding
+ * flow — the caller (payments.js) should ensure the env is populated,
+ * or this falls back gracefully to a console log.
+ *
+ * @param {string} to   - E.164 phone number (e.g. "+254712345678")
+ * @param {string} body - Message text
+ */
+async function sendMetaWhatsApp(to, body) {
+  const accessToken = process.env.META_WA_ACCESS_TOKEN;
+  const phoneNumberId = process.env.META_WA_PHONE_NUMBER_ID;
+
+  if (!accessToken || !phoneNumberId) {
+    // Emulator / secrets not configured — log to console instead
+    functions.logger.warn(
+      "META_WA_ACCESS_TOKEN or META_WA_PHONE_NUMBER_ID not set. " +
+      "WhatsApp receipt printed to console instead."
+    );
+    console.log(`[Meta WhatsApp Simulate to ${to}]:\n${body}`);
+    return;
+  }
+
+  const url = `https://graph.facebook.com/${GRAPH_API_VERSION}/${phoneNumberId}/messages`;
+
+  await axios.post(
+    url,
+    {
+      messaging_product: "whatsapp",
+      recipient_type: "individual",
+      to: to.replace(/^whatsapp:/i, "").trim(),
+      type: "text",
+      text: { preview_url: false, body },
+    },
+    {
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+        "Content-Type": "application/json",
+      },
+    }
+  );
 }
 
 /**
  * generateReceiptAndNotify
- * Dispatches async messages to tenants post successful billing payment transaction
+ * Dispatches async messages to tenants after a successful M-Pesa payment.
+ *
+ * @param {object} transaction  - { tenantPhone, amount, billId, channel }
+ * @param {string} receiptNumber - M-Pesa receipt/confirmation code
  */
 async function generateReceiptAndNotify(transaction, receiptNumber) {
   const { tenantPhone, amount, billId, channel } = transaction;
@@ -33,51 +81,42 @@ async function generateReceiptAndNotify(transaction, receiptNumber) {
   const tenantSnap = await db.collection("tenants").doc(tenantPhone).get();
   const tenant = tenantSnap.exists ? tenantSnap.data() : null;
 
-  // 3. Compose receipt text message
-  const msgText = `*EstatePay Payment Receipt*\n\n` +
-                  `Receipt ID: *${receiptNumber}*\n` +
-                  `Unit: *${bill.unitId || 'N/A'}*\n` +
-                  `Period: *${bill.period}*\n` +
-                  `Paid Amount: *KES ${amount.toLocaleString()}*\n` +
-                  `Status: *PAID (M-Pesa STK)*\n` +
-                  `Date: *${new Date().toLocaleString()}*\n\n` +
-                  `Thank you for your payment. Keep this as a reference record.`;
+  // 3. Compose receipt message
+  const msgText =
+    `*EstatePay Payment Receipt* ✅\n\n` +
+    `Receipt ID: *${receiptNumber}*\n` +
+    `Unit: *${bill.unitId || "N/A"}*\n` +
+    `Period: *${bill.period}*\n` +
+    `Paid Amount: *KES ${amount.toLocaleString()}*\n` +
+    `Status: *PAID (M-Pesa STK)*\n` +
+    `Date: *${new Date().toLocaleString("en-KE")}*\n\n` +
+    `Thank you for your payment. Keep this as a reference record.`;
 
-  functions.logger.log(`Dispatching payment notification to ${tenantPhone} via WhatsApp.`);
+  functions.logger.log(`Dispatching payment receipt to ${tenantPhone} via WhatsApp.`);
 
-  // 4. Send Twilio WhatsApp message if credentials are set
-  if (twilioClient) {
-    try {
-      await twilioClient.messages.create({
-        from: whatsappFrom,
-        to: `whatsapp:${tenantPhone}`,
-        body: msgText
-      });
-      functions.logger.log(`WhatsApp receipt message sent successfully via Twilio to: ${tenantPhone}`);
-    } catch (twilioErr) {
-      functions.logger.error("Failed to send WhatsApp message through Twilio API:", twilioErr);
-    }
-  } else {
-    functions.logger.warn("Twilio API credentials not configured. WhatsApp receipt printed to console logs instead.");
-    // In emulator mode we log it to standard console
-    console.log(`[Twilio WhatsApp Simulate to ${tenantPhone}]:\n${msgText}`);
+  // 4. Send WhatsApp receipt via Meta Cloud API
+  try {
+    await sendMetaWhatsApp(tenantPhone, msgText);
+    functions.logger.log(`WhatsApp receipt sent to: ${tenantPhone}`);
+  } catch (err) {
+    functions.logger.error("Failed to send WhatsApp receipt via Meta API:", err?.response?.data || err);
   }
 
-  // 5. Send Mobile App Push notification (if app user has token)
+  // 5. Send Mobile App Push notification (if app user has FCM token)
   if (tenant && tenant.fcmToken) {
     try {
       const payload = {
         notification: {
-          title: "Payment Confirmed!",
-          body: `KES ${amount.toLocaleString()} received for unit ${tenant.unitId}.`
+          title: "Payment Confirmed! 🎉",
+          body: `KES ${amount.toLocaleString()} received for unit ${tenant.unitId}.`,
         },
         data: {
           billId,
-          receiptNumber
-        }
+          receiptNumber,
+        },
       };
       await admin.messaging().sendToDevice(tenant.fcmToken, payload);
-      functions.logger.log(`FCM push notification sent successfully to UID: ${tenant.uid}`);
+      functions.logger.log(`FCM push notification sent to UID: ${tenant.uid}`);
     } catch (fcmErr) {
       functions.logger.error("Failed to send mobile push notification:", fcmErr);
     }
@@ -87,5 +126,5 @@ async function generateReceiptAndNotify(transaction, receiptNumber) {
 }
 
 module.exports = {
-  generateReceiptAndNotify
+  generateReceiptAndNotify,
 };

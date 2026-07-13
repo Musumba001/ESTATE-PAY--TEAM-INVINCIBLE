@@ -6,9 +6,9 @@
  *   firebase functions:secrets:set MPESA_SHORTCODE
  *   firebase functions:secrets:set MPESA_PASSKEY
  *   firebase functions:secrets:set MPESA_CALLBACK_URL
- *   firebase functions:secrets:set TWILIO_ACCOUNT_SID
- *   firebase functions:secrets:set TWILIO_AUTH_TOKEN
- *   firebase functions:secrets:set TWILIO_WHATSAPP_FROM
+ *   firebase functions:secrets:set META_WA_ACCESS_TOKEN
+ *   firebase functions:secrets:set META_WA_PHONE_NUMBER_ID
+ *   firebase functions:secrets:set META_WA_VERIFY_TOKEN
  *
  * Import the exact secrets a function needs and pass them into that
  * function's `secrets: [...]` option — do not attach every secret to every
@@ -24,9 +24,10 @@ const MPESA_SHORTCODE = defineSecret("MPESA_SHORTCODE");
 const MPESA_PASSKEY = defineSecret("MPESA_PASSKEY");
 const MPESA_CALLBACK_URL = defineSecret("MPESA_CALLBACK_URL");
 
-const TWILIO_ACCOUNT_SID = defineSecret("TWILIO_ACCOUNT_SID");
-const TWILIO_AUTH_TOKEN = defineSecret("TWILIO_AUTH_TOKEN");
-const TWILIO_WHATSAPP_FROM = defineSecret("TWILIO_WHATSAPP_FROM");
+// Meta WhatsApp Cloud API — replaces previous Twilio secrets
+const META_WA_ACCESS_TOKEN = defineSecret("META_WA_ACCESS_TOKEN");
+const META_WA_PHONE_NUMBER_ID = defineSecret("META_WA_PHONE_NUMBER_ID");
+const META_WA_VERIFY_TOKEN = defineSecret("META_WA_VERIFY_TOKEN");
 
 module.exports = {
   MPESA_CONSUMER_KEY,
@@ -34,7 +35,7 @@ module.exports = {
   MPESA_SHORTCODE,
   MPESA_PASSKEY,
   MPESA_CALLBACK_URL,
-  TWILIO_ACCOUNT_SID,
-  TWILIO_AUTH_TOKEN,
-  TWILIO_WHATSAPP_FROM,
+  META_WA_ACCESS_TOKEN,
+  META_WA_PHONE_NUMBER_ID,
+  META_WA_VERIFY_TOKEN,
 };

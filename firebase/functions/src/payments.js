@@ -1,6 +1,6 @@
 const { onCall, onRequest, HttpsError } = require("firebase-functions/v2/https");
 const { logger } = require("firebase-functions");
-const { db, FieldValue, normalizePhone, AppError } = require("./lib/firestoreHelpers");
+const { db, FieldValue, normalizePhone, AppError, getCallerPhone } = require("./lib/firestoreHelpers");
 const daraja = require("./lib/daraja");
 const secrets = require("./lib/secrets");
 
@@ -20,7 +20,7 @@ const initiateStkPush = onCall(
     ],
   },
   async (request) => {
-    const callerPhone = normalizePhone(request.auth?.token?.phone_number);
+    const callerPhone = getCallerPhone(request.auth);
     if (!callerPhone) throw new HttpsError("invalid-argument", "You must be signed in.");
 
     const { billId, payAmount, channel } = request.data || {};

@@ -62,6 +62,17 @@ async function findUnitByHouseNumber(estateId, houseNumber) {
   return { unitId: unitDoc.id, unit: unitDoc.data() };
 }
 
+function getCallerPhone(auth) {
+  if (!auth) return null;
+  let phone = normalizePhone(auth.token?.phone_number);
+  if (phone) return phone;
+  if (auth.token?.email) {
+    const emailMatch = auth.token.email.match(/^(\d+)@estatepay\.app$/);
+    if (emailMatch) return normalizePhone("+" + emailMatch[1]);
+  }
+  return null;
+}
+
 module.exports = {
   db,
   FieldValue,
@@ -72,4 +83,5 @@ module.exports = {
   getUnit,
   findUnitByInviteToken,
   findUnitByHouseNumber,
+  getCallerPhone,
 };

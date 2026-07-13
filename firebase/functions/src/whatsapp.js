@@ -1,10 +1,16 @@
 /**
- * WhatsApp bot — real Twilio webhook + Firestore-backed state machine.
+ * WhatsApp bot — Meta Cloud API webhook + Firestore-backed state machine.
  *
- * Twilio calls whatsappWebhook (a public onRequest endpoint) for every
- * inbound WhatsApp message. We validate the request signature, load or
- * create session state for the sender's phone number, run one state
- * transition, persist the new state, and send a reply via the Twilio API.
+ * Meta calls whatsappWebhook (a public onRequest endpoint) in two ways:
+ *
+ *   GET  — Webhook verification challenge. Meta sends this once when you
+ *           register (or update) the webhook URL in the Developer Portal.
+ *           We validate hub.verify_token and echo hub.challenge back.
+ *
+ *   POST — Inbound message. Fired for every WhatsApp message sent to our
+ *           number. We parse the nested JSON envelope, run one state-machine
+ *           transition, persist the new state, and send a reply via the
+ *           Meta Graph API.
  *
  * Session state lives in two places:
  *  - whatsapp_sessions/{phone}  — used BEFORE a tenant record exists
@@ -13,10 +19,10 @@
  *    verified tenant (mirrors the simulator's design).
  */
 
-const { onRequest, HttpsError } = require("firebase-functions/v2/https");
+const { onRequest } = require("firebase-functions/v2/https");
 const { logger } = require("firebase-functions");
 const { db, FieldValue, normalizePhone, getTenant, getUnit } = require("./lib/firestoreHelpers");
-const twilioLib = require("./lib/twilio");
+const metaLib = require("./lib/meta_whatsapp");
 const secrets = require("./lib/secrets");
 const householdLib = require("./lib/household");
 const { initiateStkPushInternal } = require("./payments");
@@ -131,7 +137,7 @@ async function handleTransition(phone, body) {
           fullName: session.data.fullName,
         });
         await db().collection("whatsapp_sessions").doc(phone).delete();
-        const inviteLink = `https://your-domain.com/?householdInvite=${result.inviteToken}`;
+        const inviteLink = `https://estate-pay-232f6.web.app/?householdInvite=${result.inviteToken}`;
         return (
           `✅ House ${text} registered! You are the household owner.\n\n` +
           `Share this invite link with other household members:\n${inviteLink}\n\n${MAIN_MENU_TEXT}`
@@ -177,7 +183,7 @@ async function handleTransition(phone, body) {
         if (unit.householdOwnerPhone !== phone) {
           return `Only the household owner can share the invite link.\n\n${MAIN_MENU_TEXT}`;
         }
-        const link = `https://your-domain.com/?householdInvite=${unit.inviteToken}`;
+        const link = `https://estate-pay-232f6.web.app/?householdInvite=${unit.inviteToken}`;
         return `Share this link with household members:\n${link}\n\n${MAIN_MENU_TEXT}`;
       }
       default:
@@ -294,50 +300,72 @@ async function renderAnnouncements(estateId) {
 }
 
 /**
- * whatsappWebhook — public HTTPS endpoint configured as the Twilio
- * "When a message comes in" webhook URL.
+ * whatsappWebhook — public HTTPS endpoint configured as the Meta
+ * WhatsApp Cloud API webhook URL in the Meta Developer Portal.
+ *
+ * GET  — Webhook verification (called once by Meta when you register the URL).
+ * POST — Inbound message from a WhatsApp user.
  */
 const whatsappWebhook = onRequest(
-  { secrets: [secrets.TWILIO_ACCOUNT_SID, secrets.TWILIO_AUTH_TOKEN, secrets.TWILIO_WHATSAPP_FROM] },
+  {
+    secrets: [
+      secrets.META_WA_ACCESS_TOKEN,
+      secrets.META_WA_PHONE_NUMBER_ID,
+      secrets.META_WA_VERIFY_TOKEN,
+    ],
+  },
   async (req, res) => {
-    try {
-      const signature = req.headers["x-twilio-signature"];
-      const fullUrl = `https://${req.hostname}${req.originalUrl}`;
-      const validSignature = twilioLib.isValidTwilioRequest(
-        secrets.TWILIO_AUTH_TOKEN.value(),
-        signature,
-        fullUrl,
-        req.body
+    // ---------------------------------------------------------------
+    // GET — Meta webhook verification challenge
+    // ---------------------------------------------------------------
+    if (req.method === "GET") {
+      const { ok, challenge } = metaLib.verifyWebhook(
+        req.query,
+        secrets.META_WA_VERIFY_TOKEN.value()
       );
-
-      if (!validSignature) {
-        logger.warn("whatsappWebhook: invalid Twilio signature, rejecting request.");
+      if (ok) {
+        logger.info("whatsappWebhook: Meta verification challenge accepted.");
+        res.status(200).send(challenge);
+      } else {
+        logger.warn("whatsappWebhook: Meta verification challenge failed — token mismatch.");
         res.status(403).send("Forbidden");
-        return;
       }
-
-      const fromRaw = req.body.From || ""; // "whatsapp:+2547XXXXXXXX"
-      const phone = normalizePhone(fromRaw.replace("whatsapp:", ""));
-      const body = req.body.Body || "";
-
-      const replyText = await handleTransition(phone, body);
-
-      await twilioLib.sendWhatsAppMessage({
-        accountSid: secrets.TWILIO_ACCOUNT_SID.value(),
-        authToken: secrets.TWILIO_AUTH_TOKEN.value(),
-        from: secrets.TWILIO_WHATSAPP_FROM.value(),
-        to: phone,
-        body: replyText,
-      });
-
-      // Respond to Twilio's webhook with empty TwiML (we already sent the
-      // reply via the REST API above, so no <Message> needed here).
-      res.set("Content-Type", "text/xml");
-      res.status(200).send("<Response></Response>");
-    } catch (err) {
-      logger.error("whatsappWebhook error:", err);
-      res.status(200).send("<Response></Response>");
+      return;
     }
+
+    // ---------------------------------------------------------------
+    // POST — Inbound WhatsApp message from Meta
+    // ---------------------------------------------------------------
+    if (req.method === "POST") {
+      try {
+        // Always acknowledge immediately — Meta retries if it doesn't
+        // receive a 200 within 20 seconds.
+        res.status(200).send("EVENT_RECEIVED");
+
+        const inboundMessages = metaLib.extractInboundMessages(req.body);
+
+        for (const { phone, body } of inboundMessages) {
+          const normalised = normalizePhone(phone);
+          logger.info(`whatsappWebhook: message from ${normalised}`);
+
+          const replyText = await handleTransition(normalised, body);
+
+          await metaLib.sendWhatsAppMessage({
+            accessToken: secrets.META_WA_ACCESS_TOKEN.value(),
+            phoneNumberId: secrets.META_WA_PHONE_NUMBER_ID.value(),
+            to: normalised,
+            body: replyText,
+          });
+        }
+      } catch (err) {
+        logger.error("whatsappWebhook POST error:", err);
+        // Response already sent above (200), so nothing more to do.
+      }
+      return;
+    }
+
+    // Any other HTTP method
+    res.status(405).send("Method Not Allowed");
   }
 );
 

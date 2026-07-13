@@ -2,7 +2,11 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+  <meta name="theme-color" content="#080C14">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
   <title>EstatePay</title>
   <!-- Modern Fonts -->
   <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -13,55 +17,67 @@
   <!-- Stylesheets -->
   <link rel="stylesheet" href="style.css">
   <style>
-    /* Production layout: center the phone frame instead of the 3-panel dev grid */
-    html, body.production {
+    /* ── Root Layout ─────────────────────────────────────────────────────────
+       By default, html and body take 100% viewport dimensions with a dark background.
+       ─────────────────────────────────────────────────────────────────────── */
+    html, body {
       margin: 0;
+      padding: 0;
+      width: 100%;
+      height: 100%;
+      height: 100dvh;
       background: #05070C;
+      overflow: hidden;
+      font-family: 'Plus Jakarta Sans', sans-serif;
     }
+    
     body.production {
       display: flex;
       align-items: center;
       justify-content: center;
-      min-height: 100vh;
     }
 
-    /* On real phones, fill the entire viewport below the browser's own
-       address bar — no extra margin, no decorative border. The device's
-       real bezel and the browser's own UI already frame the app; adding
-       our own border/margin on top just wastes screen space. */
-    @media (max-width: 480px) {
-      html, body {
-        height: 100%;
-        overflow: hidden;
-        position: fixed;
-        width: 100%;
-        touch-action: pan-y;
+    /* ── App Content Container ────────────────────────────────────────────────
+       Fills full screen natively.
+       ─────────────────────────────────────────────────────────────────────── */
+    .mobile-app-content {
+      width: 100%;
+      height: 100%;
+      height: 100dvh;
+      overflow: hidden;
+      display: flex;
+      flex-direction: column;
+      background: #080C14;
+      box-sizing: border-box;
+      transition: all 0.3s ease;
+    }
+
+    /* ── Desktop / Tablet (> 480px) ──────────────────────────────────────────
+       Wraps the app in a realistic phone aspect card container centered in viewport.
+       ─────────────────────────────────────────────────────────────────────── */
+    @media (min-width: 481px) {
+      .mobile-app-content {
+        width: clamp(320px, 90vw, 430px);
+        height: clamp(600px, 92dvh, 900px);
+        border-radius: 28px;
+        border: 1px solid #1E293B;
+        box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.6), 0 0 30px rgba(99, 102, 241, 0.08);
       }
-      #device-mobile-app.phone-mockup {
-        width: 100vw;
-        height: 100dvh;
-        max-width: none;
-        max-height: none;
-        border: none;
-        border-radius: 0;
-        padding: 0;
-        box-shadow: none;
-      }
-      #device-mobile-app.phone-mockup .phone-screen {
-        border-radius: 0;
+    }
+
+    /* ── Very small phones (≤ 360px) — scale down typography slightly ────── */
+    @media (max-width: 360px) {
+      .mobile-app-content {
+        font-size: 95%;
       }
     }
   </style>
 </head>
 <body class="production">
 
-  <div id="device-mobile-app" class="phone-mockup">
-    <div class="phone-screen">
-      <!-- Mobile App Content Area — populated by app.js against real Firebase -->
-      <div class="mobile-app-content" id="mobile-app-root">
-        <!-- Dynamically populated via app.js -->
-      </div>
-    </div>
+  <!-- Mobile App Content Area — populated by app.js against real Firebase -->
+  <div class="mobile-app-content" id="mobile-app-root">
+    <!-- Dynamically populated via app.js -->
   </div>
 
   <!-- Core JavaScript logic (real Firebase-backed production build) -->

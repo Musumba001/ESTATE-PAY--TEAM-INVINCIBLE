@@ -14,57 +14,124 @@ const { getAuth } = require("firebase-admin/auth");
  * but the primary registration/invite flows no longer depend on it.
  */
 async function syncClaimsForPhone(phone, { role, estateId, unitId }) {
-  const userRecord = await getAuth().getUserByPhoneNumber(phone);
-  await getAuth().setCustomUserClaims(userRecord.uid, { role, estateId, unitId });
+  try {
+    let userRecord;
+    try {
+      userRecord = await getAuth().getUserByPhoneNumber(phone);
+    } catch (authErr) {
+      // Fallback: Try looking up by pseudo-email
+      const email = phone.replace(/^\+/, "").replace(/\s/g, "") + "@estatepay.app";
+      userRecord = await getAuth().getUserByEmail(email);
+    }
+    if (userRecord) {
+      await getAuth().setCustomUserClaims(userRecord.uid, { role, estateId, unitId });
+    }
+  } catch (err) {
+    console.error(`syncClaimsForPhone failed for ${phone}:`, err);
+    // Do not rethrow; let the transaction succeed even if claims sync fails.
+    // The onTenantWrite trigger will handle claims sync defensively.
+  }
 }
 
 /**
- * Registers the FIRST resident of a house. Fails if the house is already
- * registered (has an owner) — in that case the caller must use an invite link.
+ * Registers the FIRST resident of a house.
+ *
+ * - If no unit document exists for this houseNumber, one is CREATED automatically.
+ *   (This is the normal path on a live app where users self-register new houses.)
+ * - If a unit already exists but has no owner, the caller claims it.
+ * - If a unit is already owned, fails with "already-exists" so the caller
+ *   knows to use an invite link instead.
  */
 async function registerHousehold({ estateId, houseNumber, phone, fullName }) {
-  return db().runTransaction(async (tx) => {
-    const existing = await findUnitByHouseNumber(estateId, houseNumber);
-    if (!existing) {
-      throw new AppError("not-found", `House ${houseNumber} does not exist in this estate.`);
-    }
-    const { unitId, unit } = existing;
-    if (unit.householdOwnerPhone) {
-      throw new AppError(
-        "already-exists",
-        "This house is already registered. Ask the household owner for the invite link."
-      );
-    }
+  // Normalise the house number so "A1", "a1", " A1 " all resolve to the same unit.
+  const normalizedHouseNumber = String(houseNumber).trim().toUpperCase();
 
-    const unitRef = db().collection("estates").doc(estateId).collection("units").doc(unitId);
-    const tenantRef = db().collection("tenants").doc(phone);
+  return db().runTransaction(async (tx) => {
+    const existing = await findUnitByHouseNumber(estateId, normalizedHouseNumber);
+
+    let unitId;
+    let unitRef;
     const token = generateInviteToken();
 
-    const existingTenantSnap = await tx.get(tenantRef);
-    if (existingTenantSnap.exists && ["admin", "committee"].includes(existingTenantSnap.data().role)) {
-      throw new AppError(
-        "permission-denied",
-        "This phone number belongs to an estate manager or committee account and cannot register as a resident."
-      );
+    if (!existing) {
+      // ── NEW UNIT PATH ──────────────────────────────────────────────────────
+      // No unit with this house number exists yet — create one on the fly.
+      // This is the expected path for a live estate where residents self-register.
+      unitRef = db().collection("estates").doc(estateId).collection("units").doc();
+      unitId = unitRef.id;
+
+      const tenantRef = db().collection("tenants").doc(phone);
+      const existingTenantSnap = await tx.get(tenantRef);
+      if (existingTenantSnap.exists && ["admin", "committee"].includes(existingTenantSnap.data().role)) {
+        throw new AppError(
+          "permission-denied",
+          "This phone number belongs to an estate manager or committee account and cannot register as a resident."
+        );
+      }
+
+      tx.set(unitRef, {
+        houseNumber: normalizedHouseNumber,
+        estateId,
+        occupied: true,
+        currentTenantPhone: phone,
+        householdOwnerPhone: phone,
+        inviteToken: token,
+        createdAt: FieldValue.serverTimestamp(),
+      });
+
+      tx.set(tenantRef, {
+        fullName,
+        phone,
+        estateId,
+        unitId,
+        role: "resident",
+        verified: true,
+        whatsappSessionState: { state: "MAIN_MENU", data: {} },
+        createdAt: FieldValue.serverTimestamp(),
+        lastActiveAt: FieldValue.serverTimestamp(),
+      }, { merge: true });
+
+    } else {
+      // ── EXISTING UNIT PATH ─────────────────────────────────────────────────
+      const { unit } = existing;
+      unitId = existing.unitId;
+      unitRef = db().collection("estates").doc(estateId).collection("units").doc(unitId);
+
+      if (unit.householdOwnerPhone) {
+        throw new AppError(
+          "already-exists",
+          "This house is already registered. Ask the household owner for the invite link."
+        );
+      }
+
+      const tenantRef = db().collection("tenants").doc(phone);
+      const existingTenantSnap = await tx.get(tenantRef);
+      if (existingTenantSnap.exists && ["admin", "committee"].includes(existingTenantSnap.data().role)) {
+        throw new AppError(
+          "permission-denied",
+          "This phone number belongs to an estate manager or committee account and cannot register as a resident."
+        );
+      }
+
+      tx.update(unitRef, {
+        occupied: true,
+        currentTenantPhone: phone,
+        householdOwnerPhone: phone,
+        inviteToken: token,
+      });
+
+      tx.set(tenantRef, {
+        fullName,
+        phone,
+        estateId,
+        unitId,
+        role: "resident",
+        verified: true,
+        whatsappSessionState: { state: "MAIN_MENU", data: {} },
+        createdAt: FieldValue.serverTimestamp(),
+        lastActiveAt: FieldValue.serverTimestamp(),
+      }, { merge: true });
     }
-
-    tx.update(unitRef, {
-      occupied: true,
-      currentTenantPhone: phone,
-      householdOwnerPhone: phone,
-      inviteToken: token,
-    });
-
-    tx.set(tenantRef, {
-      fullName,
-      estateId,
-      unitId,
-      role: "resident",
-      verified: true,
-      whatsappSessionState: { state: "MAIN_MENU", data: {} },
-      createdAt: FieldValue.serverTimestamp(),
-      lastActiveAt: FieldValue.serverTimestamp(),
-    }, { merge: true });
 
     return { estateId, unitId, inviteToken: token };
   }).then(async (result) => {
