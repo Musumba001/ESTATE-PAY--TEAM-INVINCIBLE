@@ -97,7 +97,14 @@ const onTenantWrite = onDocumentWritten("tenants/{phone}", async (event) => {
   const after = event.data?.after?.exists ? event.data.after.data() : null;
 
   try {
-    const userRecord = await getAuth().getUserByPhoneNumber(phone).catch(() => null);
+    // Try phone number first, then fall back to the pseudo-email used for
+    // email/password auth (e.g. console-created admin accounts).
+    let userRecord = await getAuth().getUserByPhoneNumber(phone).catch(() => null);
+    if (!userRecord) {
+      const email = phone.replace(/^\+/, "").replace(/\s/g, "") + "@estatepay.app";
+      userRecord = await getAuth().getUserByEmail(email).catch(() => null);
+    }
+
     if (!userRecord) {
       console.log(`onTenantWrite: no Auth user yet for ${phone}, skipping claims sync.`);
       return;

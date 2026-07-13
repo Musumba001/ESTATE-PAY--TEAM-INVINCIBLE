@@ -244,34 +244,10 @@ onAuthStateChanged(auth, async (user) => {
   }
 
   try {
-    // ── Claim-based Fast Routing ────────────────────────────────────────────
-    // Retrieve custom claims from the ID token. If the user already has claims
-    // set, route them immediately to bypass the resolveIdentity Cloud Function.
-    const tokenResult = await user.getIdTokenResult();
-    const claims = tokenResult.claims;
-    if (claims && claims.role && claims.estateId) {
-      authChecking = false;
-      const isManager = claims.role === "admin" || claims.role === "committee";
-      localStorage.setItem("estatepay_cached_role", isManager ? "manager" : "tenant");
-      
-      if (isManager) {
-        currentScreen = "manager-dashboard";
-        managerActiveTab = "overview";
-        subscribeManagerDashboard(claims.estateId);
-      } else {
-        currentScreen = "tenant-dashboard";
-        tenantActiveTab = "home";
-        const tenantPhone = user.phoneNumber || authPhone;
-        authPhone = tenantPhone || authPhone;
-        subscribeTenantDashboard(tenantPhone);
-      }
-      renderApp();
-      return;
-    }
-
-    // ── Fallback: resolveIdentity Cloud Function ──────────────────────────
-    // Fall back to the Cloud Function only if claims are not set or incomplete
-    // (e.g. immediate first-time onboarding).
+    // Always resolve role from Firestore via resolveIdentity.
+    // Custom claims can be stale (e.g. a former tenant promoted to admin in the
+    // console) so we never trust them for routing. The localStorage cache above
+    // handles the instant visual rendering; resolveIdentity handles correctness.
     const { data } = await callResolveIdentity({});
     authChecking = false;
     if (data.exists) {
