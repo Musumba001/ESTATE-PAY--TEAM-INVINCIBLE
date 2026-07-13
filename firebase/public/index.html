@@ -1,0 +1,73 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+  <title>EstatePay</title>
+  <!-- Modern Fonts -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700;800&family=Plus+Jakarta+Sans:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+  <!-- Lucide Icons CDN -->
+  <script src="https://unpkg.com/lucide@latest"></script>
+  <!-- Stylesheets -->
+  <link rel="stylesheet" href="style.css">
+  <style>
+    /* Production layout: center the phone frame instead of the 3-panel dev grid */
+    html, body.production {
+      margin: 0;
+      background: #05070C;
+    }
+    body.production {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      min-height: 100vh;
+    }
+
+    /* On real phones, fill the entire viewport below the browser's own
+       address bar — no extra margin, no decorative border. The device's
+       real bezel and the browser's own UI already frame the app; adding
+       our own border/margin on top just wastes screen space. */
+    @media (max-width: 480px) {
+      html, body {
+        height: 100%;
+        overflow: hidden;
+        position: fixed;
+        width: 100%;
+        touch-action: pan-y;
+      }
+      #device-mobile-app.phone-mockup {
+        width: 100vw;
+        height: 100dvh;
+        max-width: none;
+        max-height: none;
+        border: none;
+        border-radius: 0;
+        padding: 0;
+        box-shadow: none;
+      }
+      #device-mobile-app.phone-mockup .phone-screen {
+        border-radius: 0;
+      }
+    }
+  </style>
+</head>
+<body class="production">
+
+  <div id="device-mobile-app" class="phone-mockup">
+    <div class="phone-screen">
+      <!-- Mobile App Content Area — populated by app.js against real Firebase -->
+      <div class="mobile-app-content" id="mobile-app-root">
+        <!-- Dynamically populated via app.js -->
+      </div>
+    </div>
+  </div>
+
+  <!-- Core JavaScript logic (real Firebase-backed production build) -->
+  <script type="module" src="app.js"></script>
+  <script>
+    document.addEventListener("DOMContentLoaded", () => window.lucide?.createIcons());
+  </script>
+</body>
+</html>

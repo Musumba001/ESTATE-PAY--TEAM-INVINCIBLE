@@ -1,5 +1,23 @@
-// firestore.rules
 rules_version = '2';
+
+// ==========================================================================
+// EstatePay Firestore Security Rules
+//
+// Core principle: NOTHING sensitive is client-writable. Tenants, bills,
+// transactions, and units are written exclusively by Cloud Functions using
+// the Admin SDK (which bypasses these rules entirely). These rules exist to:
+//   1. Allow authenticated clients to READ only the data that belongs to them.
+//   2. Explicitly DENY client writes to sensitive collections as defense-in-depth,
+//      in case a bug elsewhere ever tries to write directly from the app.
+//
+// Custom claims set on the Firebase Auth token (via Cloud Functions, e.g. in
+// onTenantWrite / registerHousehold) are expected to include:
+//   - role: "resident" | "committee" | "admin"
+//   - estateId: string
+//   - unitId: string
+// The user's phone number is available natively as request.auth.token.phone_number
+// because we use Firebase Phone Authentication.
+// ==========================================================================
 
 service cloud.firestore {
   match /databases/{database}/documents {
@@ -8,94 +26,113 @@ service cloud.firestore {
       return request.auth != null;
     }
 
-    function myPhone() {
+    function callerPhone() {
       return request.auth.token.phone_number;
     }
 
-    function myRole() {
-      return request.auth.token.role; // custom claim: "resident" | "committee" | "admin"
+    function claimRole() {
+      return request.auth.token.role;
+    }
+
+    function claimEstateId() {
+      return request.auth.token.estateId;
+    }
+
+    function claimUnitId() {
+      return request.auth.token.unitId;
     }
 
     function isAdminOrCommittee() {
-      return isSignedIn() && (myRole() == "committee" || myRole() == "admin");
+      return isSignedIn() && (claimRole() == 'admin' || claimRole() == 'committee');
     }
 
-    function isVerifiedResident() {
-      return isSignedIn() &&
-             get(/databases/$(database)/documents/tenants/$(myPhone())).data.verified == true;
+    function isAdmin() {
+      return isSignedIn() && claimRole() == 'admin';
     }
 
-    function sameEstate(estateId) {
-      return get(/databases/$(database)/documents/tenants/$(myPhone())).data.estateId == estateId;
-    }
-
-    // ---------------- ESTATES ----------------
+    // ---------------------------------------------------------------
+    // estates/{estateId}
+    // ---------------------------------------------------------------
     match /estates/{estateId} {
+      // Any signed-in user may read estate name/location — needed so a
+      // brand-new resident (who has no estateId claim yet) can browse and
+      // select an estate on the House Entry screen before they belong to one.
       allow read: if isSignedIn();
-      allow write: if isAdminOrCommittee(); // estate config, billing day, etc.
+      allow write: if false; // Admin SDK / Cloud Functions only
 
       match /units/{unitId} {
-        // Zero-manual-data-entry menus need read access for everyone signed in
-        allow read: if isSignedIn();
-        allow write: if isAdminOrCommittee();
+        // A resident may read only their own unit; admin/committee may read
+        // any unit within their own estate.
+        allow read: if isSignedIn() && claimEstateId() == estateId &&
+                      (claimUnitId() == unitId || isAdminOrCommittee());
+        allow write: if false; // registerHousehold / invite functions only
       }
     }
 
-    // ---------------- TENANTS ----------------
-    match /tenants/{phoneNumber} {
-      // A tenant can read their own profile; admins/committee can read anyone in their estate
+    // ---------------------------------------------------------------
+    // tenants/{phoneNumber}   (document id = E.164 phone number)
+    // ---------------------------------------------------------------
+    match /tenants/{phone} {
       allow read: if isSignedIn() &&
-                     (myPhone() == phoneNumber || isAdminOrCommittee());
-      // Profile writes go through Cloud Functions only (role changes, verification)
-      allow write: if false;
+                    (callerPhone() == phone ||
+                     isAdminOrCommittee() ||
+                     (resource.data.estateId == claimEstateId() && resource.data.unitId == claimUnitId()));
+
+      // Residents may update a small self-service whitelist of their own
+      // profile fields. Everything else (role, estateId, unitId, verified,
+      // whatsappSessionState) is Cloud-Function-only.
+      allow update: if isSignedIn() && callerPhone() == phone &&
+                      request.resource.data.diff(resource.data).affectedKeys()
+                        .hasOnly(['fullName', 'fcmToken', 'lastActiveAt']);
+
+      allow create, delete: if false; // resolveIdentity / registerHousehold only
     }
 
-    // ---------------- BILLS ----------------
+    // ---------------------------------------------------------------
+    // bills/{billId}
+    // ---------------------------------------------------------------
     match /bills/{billId} {
       allow read: if isSignedIn() &&
-                     (resource.data.tenantPhone == myPhone() || isAdminOrCommittee());
-      // Bills are only ever created/updated by Cloud Functions (billing engine, M-Pesa callback)
-      allow write: if false;
+                    (resource.data.tenantPhone == callerPhone() ||
+                     resource.data.unitId == claimUnitId() ||
+                     isAdminOrCommittee());
+      allow write: if false; // generateMonthlyBills / mpesaCallback only
     }
 
-    // ---------------- TRANSACTIONS ----------------
-    match /transactions/{transactionId} {
+    // ---------------------------------------------------------------
+    // transactions/{transactionId}
+    // ---------------------------------------------------------------
+    match /transactions/{txnId} {
       allow read: if isSignedIn() &&
-                     (resource.data.tenantPhone == myPhone() || isAdminOrCommittee());
-      allow write: if false; // STK push init + callback are server-side only
+                    (resource.data.tenantPhone == callerPhone() || isAdminOrCommittee());
+      allow write: if false; // initiateStkPush / mpesaCallback only
     }
 
-    // ---------------- FORUM: ANNOUNCEMENTS ----------------
-    match /forum_announcements/{announcementId} {
-      // All verified residents in the estate can read
-      allow read: if isSignedIn() && isVerifiedResident() &&
-                     sameEstate(resource.data.estateId);
-      // Only committee/admin can write, and only within their own estate
-      allow create: if isAdminOrCommittee() &&
-                       sameEstate(request.resource.data.estateId) &&
-                       request.resource.data.authorPhone == myPhone();
-      allow update, delete: if isAdminOrCommittee() &&
-                                sameEstate(resource.data.estateId);
+    // ---------------------------------------------------------------
+    // forum_announcements/{id}
+    // ---------------------------------------------------------------
+    match /forum_announcements/{annId} {
+      allow read: if isSignedIn() && resource.data.estateId == claimEstateId();
+      allow write: if false; // createAnnouncement (committee/admin only) function
     }
 
-    // ---------------- FORUM: DISCUSSIONS ----------------
-    match /forum_discussions/{threadId} {
-      allow read: if isSignedIn() && isVerifiedResident() &&
-                     sameEstate(resource.data.estateId);
-      allow create: if isSignedIn() && isVerifiedResident() &&
-                       sameEstate(request.resource.data.estateId) &&
-                       request.resource.data.authorPhone == myPhone();
-      // Authors can edit/delete their own thread; committee/admin can moderate any
-      allow update, delete: if isSignedIn() &&
-                                (resource.data.authorPhone == myPhone() || isAdminOrCommittee());
+    // ---------------------------------------------------------------
+    // forum_discussions/{id} and nested replies
+    // ---------------------------------------------------------------
+    match /forum_discussions/{discId} {
+      allow read: if isSignedIn() && resource.data.estateId == claimEstateId();
+      allow write: if false; // createDiscussionPost function only
 
       match /replies/{replyId} {
-        allow read: if isSignedIn() && isVerifiedResident();
-        allow create: if isSignedIn() && isVerifiedResident() &&
-                         request.resource.data.authorPhone == myPhone();
-        allow update, delete: if isSignedIn() &&
-                                  (resource.data.authorPhone == myPhone() || isAdminOrCommittee());
+        allow read: if isSignedIn() &&
+                      get(/databases/$(database)/documents/forum_discussions/$(discId)).data.estateId == claimEstateId();
+        allow write: if false; // createReply function only
       }
+    }
+
+    // Deny everything else by default.
+    match /{document=**} {
+      allow read, write: if false;
     }
   }
 }

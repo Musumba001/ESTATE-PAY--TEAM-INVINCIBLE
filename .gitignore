@@ -1,0 +1,11 @@
+node_modules/
+.firebase/
+firebase-debug.log
+firestore-debug.log
+scripts/serviceAccountKey.json
+.env
+.env.*
+*.local
+
+.secret.local
+functions/.secret.local

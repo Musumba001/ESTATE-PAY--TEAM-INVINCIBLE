@@ -1,37 +1,38 @@
 /**
- * EstatePay Cloud Functions Entry Point
+ * EstatePay Cloud Functions — entry point.
+ * Firebase looks at this file's exports to know which functions to deploy.
  */
-const admin = require("firebase-admin");
 
-// Initialize Firebase Admin SDK
-// This is done once at startup and reused across all function invocations.
-if (admin.apps.length === 0) {
-  admin.initializeApp();
-}
+const { initializeApp } = require("firebase-admin/app");
+initializeApp();
 
-// ---------------- AUTHENTICATION ----------------
-const { resolveIdentity } = require("./auth/resolveIdentity");
-const { onTenantWrite } = require("./auth/onTenantWrite");
-exports.resolveIdentity = resolveIdentity;
-exports.onTenantWrite = onTenantWrite;
+const identity = require("./src/identity");
+const payments = require("./src/payments");
+const billing = require("./src/billing");
+const forum = require("./src/forum");
+const whatsapp = require("./src/whatsapp");
 
-// ---------------- WHATSAPP / TWILIO ----------------
-const { whatsappWebhook } = require("./whatsapp/webhook");
-exports.whatsappWebhook = whatsappWebhook;
+module.exports = {
+  // Identity & household
+  resolveIdentity: identity.resolveIdentity,
+  registerHousehold: identity.registerHousehold,
+  generateHouseholdInvite: identity.generateHouseholdInvite,
+  redeemHouseholdInvite: identity.redeemHouseholdInvite,
+  onTenantWrite: identity.onTenantWrite,
 
-// ---------------- PAYMENTS / M-PESA ----------------
-const { initiateStkPush } = require("./payments/initiateStkPush");
-const { mpesaCallback } = require("./payments/mpesaCallback");
-exports.initiateStkPush = initiateStkPush;
-exports.mpesaCallback = mpesaCallback;
+  // Payments
+  initiateStkPush: payments.initiateStkPush,
+  mpesaCallback: payments.mpesaCallback,
 
-// ---------------- BILLING ENGINE ----------------
-const { generateMonthlyBills } = require("./billing/generateMonthlyBills");
-exports.generateMonthlyBills = generateMonthlyBills;
+  // Billing
+  generateMonthlyBills: billing.generateMonthlyBills,
+  runBillingNow: billing.runBillingNow,
 
-// ---------------- COMMUNICATION FORUM ----------------
-const { createAnnouncement } = require("./forum/createAnnouncement");
-const { createDiscussionPost, createDiscussionReply } = require("./forum/createDiscussionPost");
-exports.createAnnouncement = createAnnouncement;
-exports.createDiscussionPost = createDiscussionPost;
-exports.createDiscussionReply = createDiscussionReply;
+  // Forum
+  createAnnouncement: forum.createAnnouncement,
+  createDiscussionPost: forum.createDiscussionPost,
+  createReply: forum.createReply,
+
+  // WhatsApp
+  whatsappWebhook: whatsapp.whatsappWebhook,
+};
