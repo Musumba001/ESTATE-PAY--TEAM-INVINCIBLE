@@ -1,11 +1,24 @@
 /**
  * EstatePay Interactive System Simulator Engine
  * Simulated Backend: Firestore, Cloud Functions, M-Pesa API, Twilio Webhook
+ *
+ * This whole file runs entirely in the browser — there is no real server,
+ * database, or M-Pesa/WhatsApp connection anywhere here. Every "API call"
+ * (functions prefixed apiXxx) and every "webhook" is just a plain JS
+ * function that mutates the `db` object below and logs what it did to the
+ * System Event Console, so the app behaves and looks like the real thing
+ * without needing any backend infrastructure to run.
  */
 
 // ==========================================================================
 // 1. Live Database State (Simulated Firestore)
 // ==========================================================================
+// `db` is the "live" simulated Firestore: the mutable object every
+// apiXxx()/waXxx() function reads from and writes to as the demo runs
+// (new bills, payments, chat state, forum posts, etc. all land here).
+// It starts out as a deep copy of SEED_DATA (see resetDatabase() below) and
+// then drifts away from it as the user interacts with the app — that's why
+// there are two objects instead of one.
 let db = {
   estates: {},
   tenants: {},
@@ -16,6 +29,12 @@ let db = {
   replies: {} // Keyed by threadId for subcollection replies simulation
 };
 
+// `SEED_DATA` is the fixed, original starting dataset (two demo estates,
+// their units/houses, two pre-registered tenants, one bill each, etc.).
+// resetDatabase() clones this into `db` on load and whenever the user hits
+// "Restart Demo", so the demo always starts from the same known state.
+// Note: `units` lives only in SEED_DATA (not in `db`) — newly registered
+// houses get appended directly onto SEED_DATA.units at runtime instead.
 const SEED_DATA = {
   estates: {
     "estate-1": { name: "Kilimani Heights", location: "Kilimani, Nairobi", adminPhoneNumbers: ["+254787654321"], billingDay: 5, createdAt: new Date("2026-01-01T08:00:00Z") },
@@ -261,6 +280,10 @@ async function apiMpesaCallback(checkoutRequestId, pinEntered, success = true) {
 
   const transaction = db.transactions[matchingTxnId];
   
+  // In this simulator any PIN works EXCEPT it must equal "1234" to succeed —
+  // that's the one hard-coded "correct" PIN, standing in for real Daraja
+  // PIN verification. Any other 4-digit PIN, or `success = false` (user
+  // hit Cancel on the USSD dialog), falls through to the failure branch below.
   if (success && pinEntered === "1234") { // Mock PIN validation
     const receiptNum = "Q" + Math.random().toString(36).substr(2, 8).toUpperCase();
     
@@ -322,6 +345,9 @@ async function apiMpesaCallback(checkoutRequestId, pinEntered, success = true) {
       }
     }
   } else {
+    // Wrong PIN or the user cancelled the STK prompt — mark the transaction
+    // failed and, if applicable, bounce the WhatsApp session back to the
+    // main menu so they aren't stuck waiting forever.
     // Failed STK push
     transaction.status = "failed";
     transaction.completedAt = new Date();
@@ -556,7 +582,11 @@ function sendWhatsAppSystemMessage(phone, message) {
 
 // Webhook state transition tables (Matches architecture document state switch)
 async function waHandleTransition(session, input, tenant, phone) {
+  // Core state machine: one case per WA_STATES value. Each branch reads the
+  // user's raw text `input`, decides what to reply, and returns the next
+  // session state to persist onto the tenant's `whatsappSessionState` field.
   switch (session.state) {
+    // Step 1 of onboarding: new phone number, ask which estate they live in.
     case WA_STATES.ONBOARDING_ESTATE: {
       const estateId = input === "1" ? "estate-1" : input === "2" ? "estate-2" : null;
       if (!estateId) {
@@ -572,6 +602,7 @@ async function waHandleTransition(session, input, tenant, phone) {
       };
     }
 
+    // Step 2 of onboarding: user picked an estate, now ask which house/unit.
     case WA_STATES.ONBOARDING_UNIT: {
       // Find units in current estate to validate selection
       const estateUnits = SEED_DATA.units[session.data.estateId] || {};
@@ -608,6 +639,7 @@ async function waHandleTransition(session, input, tenant, phone) {
       };
     }
 
+    // Fully onboarded user sitting at the main numbered menu (1-4).
     case WA_STATES.IDLE:
     case WA_STATES.MAIN_MENU: {
       if (input === "1") {
@@ -651,6 +683,7 @@ async function waHandleTransition(session, input, tenant, phone) {
       };
     }
 
+    // User just viewed their bill summary; either start a payment or return to menu.
     case WA_STATES.VIEW_BILL: {
       if (input === "0") {
         return {
@@ -681,6 +714,7 @@ async function waHandleTransition(session, input, tenant, phone) {
       };
     }
 
+    // User is viewing their account/profile details screen.
     case WA_STATES.ACCOUNT_DETAILS: {
       if (input === "0") {
         return {
@@ -694,6 +728,8 @@ async function waHandleTransition(session, input, tenant, phone) {
       };
     }
 
+    // Bot asked "how much do you want to pay?" — validate the number, then
+    // fire the (simulated) M-Pesa STK push and move to the confirm-wait state.
     case WA_STATES.AWAITING_PAYMENT_AMOUNT: {
       if (input === "0") {
         return {
@@ -720,6 +756,9 @@ async function waHandleTransition(session, input, tenant, phone) {
       };
     }
 
+    // STK push has been sent to the (simulated) handset; we're polling/waiting
+    // for the user to enter their M-Pesa PIN. The actual confirmation arrives
+    // asynchronously via apiMpesaCallback(), not through this text input.
     case WA_STATES.AWAITING_PAYMENT_CONFIRM: {
       if (input === "0") {
         // User cancelled waiting
@@ -734,6 +773,7 @@ async function waHandleTransition(session, input, tenant, phone) {
       };
     }
 
+    // Estate Forum sub-menu: view announcements or start composing a discussion post.
     case WA_STATES.FORUM_MENU: {
       if (input === "0") {
         return {
@@ -759,6 +799,7 @@ async function waHandleTransition(session, input, tenant, phone) {
       };
     }
 
+    // User was asked to type their discussion post; validate length, then publish it.
     case WA_STATES.FORUM_AWAITING_POST: {
       if (input.length < 5) {
         return {
@@ -794,6 +835,7 @@ function waRenderMainMenu() {
   return `📋 *EstatePay Main Menu*:\n\n1. 💵 My Bill\n2. 💸 Pay Bill\n3. 📄 Payment History\n4. 🧾 Account Details\n\nReply with *1*, *2*, *3*, or *4* to select.\nReply *0* to return to this menu anytime.`;
 }
 
+// Builds the formatted payment-history text shown for WhatsApp menu option 3 ("Payment History").
 async function waRenderPaymentHistory(phone) {
   let reply = `📄 *Payment History*:\n\n`;
   const txnList = getTenantPaymentHistory(phone);
@@ -813,10 +855,12 @@ async function waRenderPaymentHistory(phone) {
   return reply;
 }
 
+// Renders the text for the Estate Forum sub-menu (announcements vs. post-a-discussion). Currently unused by the active state machine but kept for future forum-menu wiring.
 function waRenderForumMenu() {
   return `💬 *Estate Forum*:\n\n1. 📢 View Announcements\n2. ✍️ Post to Discussion Board\n\nReply with *1* or *2*. Reply *0* to return to Main Menu.`;
 }
 
+// Renders a numbered list of house units for onboarding step 2, letting a new WhatsApp user pick their unit by number.
 async function waRenderUnitMenu(estateId) {
   const units = SEED_DATA.units[estateId] || {};
   let listStr = `🏠 *Select Your House Unit* in ${db.estates[estateId].name}:\n\n`;
@@ -829,6 +873,7 @@ async function waRenderUnitMenu(estateId) {
   return listStr;
 }
 
+// Renders a formatted summary of the tenant's profile (name, estate, house, role, outstanding balance) for WhatsApp option 4.
 async function waRenderAccountDetails(phone) {
   const tenant = db.tenants[phone];
   const estate = tenant?.estateId ? db.estates[tenant.estateId] : null;
@@ -839,6 +884,7 @@ async function waRenderAccountDetails(phone) {
   return `🏠 *Account Details*:\n\nName: *${tenant?.fullName || "N/A"}*\nPhone: *${phone}*\nEstate: *${estate?.name || "Not linked"}*\nHouse: *${unit?.houseNumber || "Not linked"}*\nRole: *${tenant?.role || "resident"}*\nVerified: *${tenant?.verified ? "Yes" : "No"}*\nHousehold Outstanding Balance: *KES ${balance.toLocaleString()}*\n\nReply *0* to return to Main Menu.`;
 }
 
+// Renders the outstanding-bill summary text for WhatsApp option 1, including balance, due date, and status.
 async function waRenderBillSummary(phone) {
   let pendingBill = null;
   const householdBills = getTenantHouseholdBills(phone);
@@ -856,6 +902,7 @@ async function waRenderBillSummary(phone) {
   return `💵 *Outstanding Bill Summary*:\n\nPeriod: *${pendingBill.period}*\nTotal Bill: *KES ${pendingBill.amount.toLocaleString()}*\nAmount Paid: *KES ${(pendingBill.amountPaid || 0).toLocaleString()}*\nBalance Due: *KES ${currentBalance.toLocaleString()}*\nDue Date: *${new Date(pendingBill.dueDate).toLocaleDateString()}*\nStatus: *${pendingBill.status.toUpperCase()}*\n\nReply *1* to pay via M-Pesa STK push.\nReply *0* to return to Main Menu.`;
 }
 
+// Lists every posted announcement for a given estate as WhatsApp-formatted text (used by the forum menu).
 async function waRenderAnnouncements(estateId) {
   let output = `📢 *Announcements for ${db.estates[estateId].name}*:\n\n`;
   let count = 0;
@@ -906,6 +953,7 @@ let authConfirmPassword = "";
 let householdEntryStep = "search"; // "search" | "join" | "register"
 let registerEstateName = "";
 
+// Looks up a unit by its human-entered house number, optionally scoped to a single estate. Returns { estateId, unitId, unit } or null.
 function findUnitByHouseNumber(houseNumber, estateScopeId = null) {
   const normalized = (houseNumber || "").trim().toLowerCase();
   if (!normalized) return null;
@@ -924,6 +972,7 @@ function findUnitByHouseNumber(houseNumber, estateScopeId = null) {
   return null;
 }
 
+// Looks up a unit by its household invite token (used when a new member joins via a shared invite link).
 function findUnitByInviteToken(token) {
   const normalized = (token || "").trim();
   if (!normalized) return null;
@@ -940,6 +989,7 @@ function findUnitByInviteToken(token) {
   return null;
 }
 
+// Extracts the raw invite token from either a full pasted invite URL or a bare token string.
 function extractInviteToken(value) {
   const raw = (value || "").trim();
   if (!raw) return "";
@@ -952,10 +1002,12 @@ function extractInviteToken(value) {
   }
 }
 
+// Builds a unique invite-token string for a newly registered household unit.
 function createHouseholdInviteToken(estateId, unitId) {
   return `invite-${estateId}-${unitId}-${Date.now()}`;
 }
 
+// Builds the full shareable invite URL (current origin + ?householdInvite=<token>) for a unit.
 function getHouseholdInviteLink(unit) {
   if (!unit || !unit.inviteToken) return "";
   const url = new URL(window.location.href);
@@ -965,6 +1017,7 @@ function getHouseholdInviteLink(unit) {
   return url.toString();
 }
 
+// Resolves the estate/unit pair linked to the currently active (logged-in) tenant, or null if unlinked.
 function getActiveTenantUnit() {
   const tenant = db.tenants[activePhone];
   if (!tenant || !tenant.estateId || !tenant.unitId) return null;
@@ -973,12 +1026,14 @@ function getActiveTenantUnit() {
   return { estateId: tenant.estateId, unitId: tenant.unitId, unit };
 }
 
+// Syncs the houseNumberInput UI variable from a tenant's linked unit record (used right after login).
 function setHouseNumberFromTenant(phone) {
   const tenant = db.tenants[phone];
   const unit = tenant ? SEED_DATA.units[tenant.estateId]?.[tenant.unitId] : null;
   houseNumberInput = unit ? unit.houseNumber : "";
 }
 
+// Handles a new household member joining an existing house via the owner's invite link: creates their tenant record and links them to the unit.
 function joinHouseholdFromInvite(inviteValue) {
   const token = extractInviteToken(inviteValue);
   const match = findUnitByInviteToken(token);
@@ -1044,6 +1099,7 @@ const monthlyData = [
   { month: "Jul", collected: 4500 }
 ];
 
+// Returns every bill document that belongs to a tenant's household (estate + unit).
 function getTenantHouseholdBills(phone) {
   const tenant = db.tenants[phone];
   if (!tenant || !tenant.estateId || !tenant.unitId) return [];
@@ -1053,6 +1109,7 @@ function getTenantHouseholdBills(phone) {
     .filter(bill => bill.estateId === tenant.estateId && bill.unitId === tenant.unitId);
 }
 
+// Returns the most recently generated bill for a tenant's household (used as the "current" bill).
 function getTenantHouseholdBill(phone) {
   const householdBills = getTenantHouseholdBills(phone);
   if (!householdBills.length) return null;
@@ -1061,6 +1118,7 @@ function getTenantHouseholdBill(phone) {
   return householdBills[0];
 }
 
+// Returns successful payment transactions tied to a tenant/household, sorted newest first.
 function getTenantPaymentHistory(phone) {
   const tenant = db.tenants[phone];
   if (!tenant) return [];
@@ -1073,26 +1131,31 @@ function getTenantPaymentHistory(phone) {
     .sort((a, b) => new Date(b.completedAt || b.initiatedAt || 0) - new Date(a.completedAt || a.initiatedAt || 0));
 }
 
+// Computes the outstanding balance for a bill, falling back to the full bill amount if `balance` was never set.
 function getBillBalance(bill) {
   if (!bill) return 0;
   return bill.balance !== undefined ? bill.balance : (bill.amount || 0) - (bill.amountPaid || 0);
 }
 
+// Derives a simple "pending" / "paid" status label from a bill's current balance.
 function getBillStatus(bill) {
   return getBillBalance(bill) > 0 ? "pending" : "paid";
 }
 
+// Sums outstanding balances across every bill in a tenant's household (used for household-level totals).
 function getHouseBalance(phone) {
   const bills = getTenantHouseholdBills(phone);
   return bills.reduce((total, bill) => total + getBillBalance(bill), 0);
 }
 
+// Maps a numeric balance to a color-coded UI label: green credit, blue zero-balance, red pending.
 function getBalanceDisplay(balance) {
   if (balance < 0) return { label: `Credit KSh ${Math.abs(balance).toLocaleString()}`, color: "#10B981", status: "paid" };
   if (balance === 0) return { label: "KSh 0", color: "#60A5FA", status: "paid" };
   return { label: `KSh ${balance.toLocaleString()}`, color: "#EF4444", status: "pending" };
 }
 
+// Comparator used to naturally/numerically sort house-number strings (e.g. "A-2" before "A-10").
 function sortHouseNumbers(a, b) {
   return String(a || "").localeCompare(String(b || ""), undefined, { numeric: true, sensitivity: "base" });
 }
@@ -2263,17 +2326,32 @@ function renderManagerDashboard() {
   `;
 }
 
-// Global click event delegation handler
+// Global click event delegation handler.
+//
+// The phone's whole UI is re-rendered from scratch as an HTML string on every
+// state change (see renderMobileApp()), so we can't attach individual
+// listeners to buttons that don't exist yet at page-load time. Instead a
+// single listener is bound once to the outer #mobile-app-root container
+// (see the DOMContentLoaded block near the bottom of this file), and every
+// click anywhere inside it bubbles up here. This function figures out which
+// button/element was actually clicked, matches it against a big list of
+// known element IDs/classes, mutates the relevant state variables, then
+// calls renderMobileApp() to redraw the screen with the new state.
 function handleMobileAppClick(e) {
   const target = e.target;
   
-  // Find button or clickable element (bubble up to handle inner elements like text/icons)
+  // Find button or clickable element (bubble up to handle inner elements like text/icons).
+  // Clicking an icon or text span inside a button still needs to resolve to
+  // that button's id, hence the .closest() bubbling instead of a direct match.
   let btn = target.closest("button");
   if (!btn) {
+    // Not a real <button> — check for the handful of non-button elements
+    // that are also clickable (tag filters, list rows, bottom-nav items).
     const clickable = target.closest(".ep-tag-btn, .ep-item-card, .ep-bottom-nav-btn, .btn-manager-tenant-row");
     if (clickable) {
       btn = clickable;
     } else {
+      // Click landed on inert content (plain text, background, etc.) — ignore it.
       return;
     }
   }
@@ -2845,6 +2923,7 @@ function renderDbViewer() {
   });
 }
 
+// Populates the Admin Control Center's "Registered Houses" list in the (hidden) admin panel from live simulated-DB data.
 function renderAdminRegisteredHouses() {
   const container = document.getElementById("admin-registered-houses-list");
   if (!container) return;
