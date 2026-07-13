@@ -1,6 +1,6 @@
 /**
  * EstatePay Interactive System Simulator Engine
- * Simulated Backend: Firestore, Cloud Functions, M-Pesa API, Twilio Webhook
+ * Simulated Backend with Firestore, Cloud Functions, M-Pesa API, Twilio Webhook
  */
 
 // ==========================================================================
